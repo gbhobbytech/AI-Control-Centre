@@ -1,3 +1,8 @@
+[harnesses.computer_dmz]
+display_name = "Computer DMZ"
+services = ["computer_dmz"]
+open_service = "computer_dmz"
+
 [profiles.coding]
 display_name = "Coding"
 services = ["llama"]
@@ -10,15 +15,14 @@ services = ["llama"]
 open_service = "llama"
 default_model = "qwen_qwen3_30b_a3b_instruct_2507_q4_k_m"
 
-
 [profiles.prompt_helper]
 display_name = "Prompt Helper"
 services = ["prompt_helper"]
 
 [profiles.agent]
 display_name = "Agent"
-services = ["llama", "computer_dmz"]
-open_service = "computer_dmz"
+services = ["llama"]
+harness = "computer_dmz"
 default_model = "qwen_qwen3_30b_a3b_instruct_2507_q4_k_m"
 
 [profiles.image]

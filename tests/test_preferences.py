@@ -83,7 +83,11 @@ def test_save_preferences_round_trips_task_and_prompt_settings(tmp_path: Path):
         config_dir,
         model_roots=(tmp_path / "models",),
         task_models={"coding": "large", "chat": "small", "agent": "small"},
+        agent_harness=None,
+        agent_base_services=("llama",),
+        harnesses={},
         prompt_model="small",
+        prompt_enabled=True,
         prompt_auto_lightest=False,
         prompt_processing_mode="gpu",
         prompt_keep_loaded=False,
@@ -99,8 +103,10 @@ def test_save_preferences_round_trips_task_and_prompt_settings(tmp_path: Path):
     assert config.settings.setup_completed is True
     assert config.profiles["coding"].default_model == "large"
     assert config.profiles["chat"].default_model == "small"
+    assert config.settings.setup_schema_version == 2
     assert config.settings.prompt_workshop.model_strategy == "manual"
     assert config.settings.prompt_workshop.preferred_model == "small"
+    assert config.settings.prompt_workshop.enabled is True
     assert config.settings.prompt_workshop.processing_mode == "gpu"
     assert config.settings.prompt_workshop.keep_loaded is False
     assert config.settings.prompt_workshop.gpu_layers == 7
@@ -125,3 +131,32 @@ def test_settings_defaults_setup_to_incomplete(tmp_path: Path):
     loaded = load_settings(settings)
     assert loaded.setup_completed is False
     assert loaded.prompt_workshop.processing_mode == "auto"
+
+
+def test_saving_agent_as_unconfigured_removes_legacy_runtime_services(tmp_path: Path):
+    config_dir = _make_config(tmp_path)
+    save_preferences(
+        config_dir,
+        model_roots=(tmp_path / "models",),
+        task_models={"coding": "small", "chat": "large", "agent": None},
+        agent_harness=None,
+        agent_base_services=("llama",),
+        harnesses={},
+        prompt_model=None,
+        prompt_enabled=False,
+        prompt_auto_lightest=True,
+        prompt_processing_mode="auto",
+        prompt_keep_loaded=True,
+        prompt_gpu_layers=None,
+        prompt_context_length=4096,
+        prompt_port=8081,
+        prompt_startup_timeout=60,
+        prompt_cache_type_k="q8_0",
+        prompt_cache_type_v="q8_0",
+    )
+    loaded = load_app_config(config_dir)
+    assert loaded.profiles["agent"].services == ("llama",)
+    assert loaded.profiles["agent"].harness is None
+    assert loaded.profiles["agent"].default_model is None
+    assert loaded.harnesses == {}
+    assert loaded.settings.prompt_workshop.enabled is False

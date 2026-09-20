@@ -65,3 +65,34 @@ def test_profile_starts_services_in_declared_dependency_order(tmp_path: Path):
         assert all(status.state == ServiceState.READY for _, status in results)
     finally:
         manager.stop_all()
+
+
+def test_agent_profile_adds_selected_harness_services(tmp_path: Path):
+    from ai_control_centre.domain import HarnessConfig
+
+    port_a = _free_port()
+    port_b = _free_port()
+    llama = ProcessServiceConfig(
+        id="llama", display_name="LLM", executable=Path(sys.executable),
+        args=("-m", "http.server", str(port_a), "--bind", "127.0.0.1"), cwd=tmp_path,
+        health=HealthCheckConfig(url=f"http://127.0.0.1:{port_a}/", startup_timeout=5, retry_interval=0.05, request_timeout=0.2),
+        stop_timeout=2,
+    )
+    harness_service = ProcessServiceConfig(
+        id="harness", display_name="Harness", executable=Path(sys.executable),
+        args=("-m", "http.server", str(port_b), "--bind", "127.0.0.1"), cwd=tmp_path,
+        health=HealthCheckConfig(url=f"http://127.0.0.1:{port_b}/", startup_timeout=5, retry_interval=0.05, request_timeout=0.2),
+        dependencies=("llama",), stop_timeout=2,
+    )
+    config = AppConfig(
+        settings=Settings(log_dir=tmp_path / "logs", runtime_dir=tmp_path / "runtime"),
+        services={"llama": llama, "harness": harness_service},
+        profiles={"agent": ProfileConfig(id="agent", display_name="Agent", services=("llama",), harness="test")},
+        harnesses={"test": HarnessConfig(id="test", display_name="Test Harness", services=("harness",))},
+    )
+    manager = ServiceManager(config)
+    try:
+        results = manager.start_profile("agent", open_interface=False)
+        assert [service_id for service_id, _ in results] == ["llama", "harness"]
+    finally:
+        manager.stop_all()

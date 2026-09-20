@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from .domain import (
     DockerServiceConfig,
     HealthCheckConfig,
+    HarnessConfig,
     ModelConfig,
     ProcessServiceConfig,
     ProfileConfig,
@@ -17,6 +18,10 @@ from .domain import (
     ServiceConfig,
 )
 from .models import discover_models
+from .tuning import CURRENT_TUNING_SCHEMA
+
+
+CURRENT_SETUP_SCHEMA = 2
 
 
 class ConfigError(ValueError):
@@ -78,6 +83,7 @@ class Settings:
     gpu_backend: str = "auto"
     monitoring_interval: float = 2.0
     setup_completed: bool = False
+    setup_schema_version: int = 0
     prompt_workshop: PromptWorkshopConfig = field(default_factory=PromptWorkshopConfig)
     appearance: dict = field(default_factory=dict)
 
@@ -87,6 +93,7 @@ class AppConfig:
     settings: Settings
     services: dict[str, ServiceConfig]
     profiles: dict[str, ProfileConfig]
+    harnesses: dict[str, HarnessConfig] = field(default_factory=dict)
     models: dict[str, ModelConfig] = field(default_factory=dict)
 
 
@@ -125,7 +132,8 @@ def load_settings(path: Path) -> Settings:
         setup_raw = {}
     if not isinstance(setup_raw, dict):
         raise ConfigError("[setup] must be a table")
-    setup_completed = bool(setup_raw.get("completed", False))
+    setup_schema_version = int(setup_raw.get("schema_version", 0) or 0)
+    setup_completed = bool(setup_raw.get("completed", False)) and setup_schema_version == CURRENT_SETUP_SCHEMA
 
     prompt_raw = data.get("prompt_workshop", {})
     if prompt_raw is None:
@@ -177,6 +185,7 @@ def load_settings(path: Path) -> Settings:
         raise ConfigError("[prompt_workshop]: cache types must not be empty")
 
     prompt_workshop = PromptWorkshopConfig(
+        enabled=bool(prompt_raw.get("enabled", defaults.enabled)),
         service=_require_str(prompt_raw, "service", context)
         if "service" in prompt_raw
         else defaults.service,
@@ -214,6 +223,7 @@ def load_settings(path: Path) -> Settings:
         gpu_backend=gpu_backend,
         monitoring_interval=monitoring_interval,
         setup_completed=setup_completed,
+        setup_schema_version=setup_schema_version,
         prompt_workshop=prompt_workshop,
         appearance=_load_appearance(data.get("appearance", {})),
     )
@@ -482,8 +492,10 @@ def load_models(path: Path, roots: tuple[Path, ...]) -> dict[str, ModelConfig]:
             if "estimated_vram_mib" in raw
             else base.estimated_vram_mib,
             notes=_optional_str(raw, "notes", context) or base.notes,
-            tuning_reviewed=raw.get("tuning_reviewed", False) is True,
+            tuning_reviewed=(raw.get("tuning_reviewed", False) is True
+                             and int(raw.get("tuning_schema_version", 0) or 0) == CURRENT_TUNING_SCHEMA),
             tuning_source=str(raw.get("tuning_source", "unreviewed")),
+            tuning_schema_version=int(raw.get("tuning_schema_version", 0) or 0),
             flash_attention=_optional_str(raw, "flash_attention", context),
             max_output_tokens=_optional_int(raw, "max_output_tokens", context),
             startup_timeout_seconds=_optional_int(raw, "startup_timeout_seconds", context),
@@ -499,10 +511,71 @@ def load_models(path: Path, roots: tuple[Path, ...]) -> dict[str, ModelConfig]:
     return dict(sorted(models.items()))
 
 
+def load_harnesses(path: Path, services: dict[str, ServiceConfig]) -> dict[str, HarnessConfig]:
+    if not path.exists():
+        return {}
+    with path.open("rb") as fh:
+        data = tomllib.load(fh)
+    raw_harnesses = data.get("harnesses", {})
+    if raw_harnesses is None:
+        raw_harnesses = {}
+    if not isinstance(raw_harnesses, dict):
+        raise ConfigError("[harnesses] must be a table")
+    harnesses: dict[str, HarnessConfig] = {}
+    if not raw_harnesses:
+        # V0.x stored the agent runtime directly in the Agent profile. Expose the
+        # non-model services as a synthetic harness so V1 setup can migrate it
+        # without silently losing a working environment.
+        profiles_raw = data.get("profiles", {})
+        agent_raw = profiles_raw.get("agent", {}) if isinstance(profiles_raw, dict) else {}
+        legacy_services = agent_raw.get("services", []) if isinstance(agent_raw, dict) else []
+        if isinstance(legacy_services, list):
+            harness_services = []
+            kept_main_model_service = False
+            for service_id in legacy_services:
+                cfg = services.get(service_id)
+                if (not kept_main_model_service and isinstance(cfg, ProcessServiceConfig) and cfg.uses_model):
+                    kept_main_model_service = True
+                    continue
+                if service_id in services:
+                    harness_services.append(service_id)
+            if harness_services:
+                open_service = agent_raw.get("open_service") if isinstance(agent_raw, dict) else None
+                if open_service not in harness_services:
+                    open_service = harness_services[-1]
+                harnesses["legacy_agent"] = HarnessConfig(
+                    id="legacy_agent",
+                    display_name="Existing Agent Harness",
+                    services=tuple(harness_services),
+                    open_service=open_service,
+                )
+    for harness_id, raw in raw_harnesses.items():
+        if not isinstance(raw, dict):
+            raise ConfigError(f"harness '{harness_id}' must be a table")
+        context = f"harness '{harness_id}'"
+        harness_services = _string_list(raw, "services", context)
+        if not harness_services:
+            raise ConfigError(f"{context}: services must not be empty")
+        for service_id in harness_services:
+            if service_id not in services:
+                raise ConfigError(f"{context}: unknown service '{service_id}'")
+        open_service = _optional_str(raw, "open_service", context)
+        if open_service is not None and open_service not in harness_services:
+            raise ConfigError(f"{context}: open_service must be one of the harness services")
+        harnesses[harness_id] = HarnessConfig(
+            id=harness_id,
+            display_name=_require_str(raw, "display_name", context),
+            services=harness_services,
+            open_service=open_service,
+        )
+    return harnesses
+
+
 def load_profiles(
     path: Path,
     services: dict[str, ServiceConfig],
     models: dict[str, ModelConfig],
+    harnesses: dict[str, HarnessConfig],
 ) -> dict[str, ProfileConfig]:
     if not path.exists():
         return {}
@@ -524,8 +597,19 @@ def load_profiles(
             if service_id not in services:
                 raise ConfigError(f"{context}: unknown service '{service_id}'")
 
+        # V1 Agent harnesses own the runtime/interface to open. Older V0.x
+        # configurations may still contain a profile-level open_service that
+        # points at the old agent runtime (for example computer_dmz) even after
+        # that service has moved behind a harness. Do not let that stale field
+        # invalidate an otherwise valid harness-based Agent profile.
+        harness = _optional_str(raw, "harness", context)
+        if harness is not None and harness not in harnesses:
+            raise ConfigError(f"{context}: unknown harness '{harness}'")
+
         open_service = _optional_str(raw, "open_service", context)
-        if open_service is not None and open_service not in profile_services:
+        if profile_id == "agent" and harness is not None:
+            open_service = None
+        elif open_service is not None and open_service not in profile_services:
             raise ConfigError(
                 f"{context}: open_service must be one of the profile services"
             )
@@ -542,6 +626,7 @@ def load_profiles(
             services=profile_services,
             open_service=open_service,
             selected_model=selected_model,
+            harness=harness,
         )
 
     return profiles
@@ -572,26 +657,31 @@ def load_app_config(config_dir: Path) -> AppConfig:
                 f"service '{service_id}' uses model placeholders but no models are configured or discovered"
             )
 
-    profiles = load_profiles(config_dir / "profiles.toml", services, models)
+    profile_path = config_dir / "profiles.toml"
+    harnesses = load_harnesses(profile_path, services)
+    profiles = load_profiles(profile_path, services, models, harnesses)
     workshop = settings.prompt_workshop
-    if workshop.model_strategy == "manual":
-        if workshop.preferred_model is None:
-            raise ConfigError("[prompt_workshop]: manual model strategy requires preferred_model")
-        if workshop.preferred_model not in models:
-            raise ConfigError(
-                f"[prompt_workshop]: unknown preferred_model '{workshop.preferred_model}'"
-            )
-    if workshop.service not in services:
-        raise ConfigError(f"[prompt_workshop]: unknown service '{workshop.service}'")
-    for key, profile_id in (
-        ("startup_profile", workshop.startup_profile),
-        ("agent_profile", workshop.agent_profile),
-        ("image_profile", workshop.image_profile),
-    ):
-        if profile_id not in profiles:
-            raise ConfigError(
-                f"[prompt_workshop]: {key} refers to unknown profile '{profile_id}'"
-            )
+    if workshop.enabled:
+        if workshop.model_strategy == "manual":
+            if workshop.preferred_model is None:
+                raise ConfigError("[prompt_workshop]: manual model strategy requires preferred_model")
+            if workshop.preferred_model not in models:
+                raise ConfigError(
+                    f"[prompt_workshop]: unknown preferred_model '{workshop.preferred_model}'"
+                )
+        if workshop.service not in services:
+            raise ConfigError(f"[prompt_workshop]: unknown service '{workshop.service}'")
+        for key, profile_id in (
+            ("startup_profile", workshop.startup_profile),
+            ("agent_profile", workshop.agent_profile),
+            ("image_profile", workshop.image_profile),
+        ):
+            if profile_id not in profiles:
+                raise ConfigError(
+                    f"[prompt_workshop]: {key} refers to unknown profile '{profile_id}'"
+                )
+    # When Prompt Helper is disabled, its service/profile bindings are optional.
+    # The main GUI independently derives whether Agent/Image dispatch is available.
     return AppConfig(
-        settings=settings, services=services, profiles=profiles, models=models
+        settings=settings, services=services, profiles=profiles, harnesses=harnesses, models=models
     )

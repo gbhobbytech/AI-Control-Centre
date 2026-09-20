@@ -11,8 +11,10 @@ interval_seconds = 2.0
 
 [setup]
 completed = false
+schema_version = 2
 
 [prompt_workshop]
+enabled = true
 service = "prompt_helper"
 startup_profile = "prompt_helper"
 endpoint = "http://127.0.0.1:8081/v1/chat/completions"

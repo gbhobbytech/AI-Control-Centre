@@ -122,7 +122,7 @@ class ServiceManager:
         main_llama = service_id != self.config.settings.prompt_workshop.service and is_llama_service(config)
         if main_llama and not model.tuning_reviewed:
             raise RuntimeError(
-                f"Review launch settings for '{model.display_name}' under File > Settings > Model tuning before starting. "
+                f"Review launch settings for '{model.display_name}' under Preferences > Settings > Model tuning before starting. "
                 "Choose values for this computer, or import them from a running local server."
             )
         render_model = replace(model, **model_values(model)) if main_llama else model
@@ -418,6 +418,24 @@ class ServiceManager:
     def stop_service(self, service_id: str) -> ServiceStatus:
         return self.get(service_id).stop()
 
+    def _profile_services(self, profile) -> tuple[str, ...]:
+        services = list(profile.services)
+        if profile.harness:
+            harness = self.config.harnesses.get(profile.harness)
+            if harness is None:
+                raise RuntimeError(f"Profile '{profile.display_name}' refers to unknown harness '{profile.harness}'")
+            for service_id in harness.services:
+                if service_id not in services:
+                    services.append(service_id)
+        return tuple(services)
+
+    def _profile_open_service(self, profile) -> str | None:
+        if profile.harness:
+            harness = self.config.harnesses.get(profile.harness)
+            if harness and harness.open_service:
+                return harness.open_service
+        return profile.open_service
+
     def start_profile(
         self,
         profile_id: str,
@@ -433,7 +451,7 @@ class ServiceManager:
             raise KeyError(f"Unknown profile: {profile_id}") from exc
 
         selected_model = model_id or profile.selected_model
-        requested_order = self._dependency_order(profile.services)
+        requested_order = self._dependency_order(self._profile_services(profile))
         for sid in requested_order:
             self._controller_for_start(sid, selected_model)
         results = self._prepare_conflicts(
@@ -462,8 +480,9 @@ class ServiceManager:
                     f"Profile '{profile.display_name}' stopped because {service_id} failed: {result.detail}"
                 )
 
-        if open_interface and profile.open_service:
-            self.get(profile.open_service).open()
+        open_service = self._profile_open_service(profile)
+        if open_interface and open_service:
+            self.get(open_service).open()
         return results
 
     def stop_profile(self, profile_id: str) -> list[tuple[str, ServiceStatus]]:
@@ -473,7 +492,7 @@ class ServiceManager:
             raise KeyError(f"Unknown profile: {profile_id}") from exc
 
         results: list[tuple[str, ServiceStatus]] = []
-        for service_id in reversed(self._dependency_order(profile.services)):
+        for service_id in reversed(self._dependency_order(self._profile_services(profile))):
             status = self.get(service_id).status()
             if status.state == ServiceState.EXTERNAL:
                 results.append((service_id, status))

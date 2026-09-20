@@ -1,16 +1,15 @@
+# V1.0 deliberately does not ship active hardware-tuning values.
+# The Setup Wizard requires each selected Coding/Chat/Agent model to be configured
+# for the current computer before it can launch.
+
 [models.qwen3_coder_30b_heretic]
 display_name = "Qwen3-Coder 30B A3B Instruct Heretic Q4_K_M"
 path = "~/ai/models/llm/heretic/Qwen3-Coder-30B-A3B-Instruct-Heretic.Q4_K_M.gguf"
 family = "Qwen3-Coder"
 quant = "Q4_K_M"
 architecture = "moe"
-recommended_gpu_layers = 22
-recommended_context_length = 65536
-cache_type_k = "q8_0"
-cache_type_v = "q8_0"
 vision = false
-estimated_vram_mib = 9700
-notes = "Approximate Orson delta observed during 2026-09-20 lifecycle testing; refine later."
+notes = "Reference Orson coding model. Configure launch settings during V1.0 setup."
 
 [models.qwen_qwen3_30b_a3b_instruct_2507_q4_k_m]
 display_name = "Qwen3 30B A3B Instruct 2507 Q4_K_M"
@@ -19,7 +18,4 @@ family = "Qwen3"
 quant = "Q4_K_M"
 architecture = "moe"
 vision = false
-notes = "General-purpose default for Chat and Agent on the Orson reference configuration. Review per-model tuning before first launch. Unset values use the conservative starting preset."
-
-# Hardware settings above are historical Orson examples, not portable fit guarantees.
-# Every main llama model must be reviewed in Settings > Model tuning before launch.
+notes = "Reference Orson general-purpose model. Configure launch settings during V1.0 setup."

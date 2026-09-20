@@ -18,6 +18,8 @@ BASELINE = {
     'max_output_tokens': 2048,
     'startup_timeout_seconds': 180,
 }
+CURRENT_TUNING_SCHEMA = 1
+
 CACHE_TYPES = ('f16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'bf16', 'f32')
 FLAGS = {
     'recommended_gpu_layers': ('-ngl', '--gpu-layers', '--n-gpu-layers'),

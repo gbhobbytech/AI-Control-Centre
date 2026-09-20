@@ -55,6 +55,7 @@ class ModelConfig:
     notes: str | None = None
     tuning_reviewed: bool = False
     tuning_source: str = "unreviewed"
+    tuning_schema_version: int = 0
     flash_attention: str | None = None
     max_output_tokens: int | None = None
     startup_timeout_seconds: int | None = None
@@ -105,12 +106,21 @@ ServiceConfig = ProcessServiceConfig | DockerServiceConfig
 
 
 @dataclass(frozen=True)
+class HarnessConfig:
+    id: str
+    display_name: str
+    services: tuple[str, ...]
+    open_service: str | None = None
+
+
+@dataclass(frozen=True)
 class ProfileConfig:
     id: str
     display_name: str
     services: tuple[str, ...]
     open_service: str | None = None
     selected_model: str | None = None
+    harness: str | None = None
 
     @property
     def default_model(self) -> str | None:
@@ -120,6 +130,7 @@ class ProfileConfig:
 
 @dataclass(frozen=True)
 class PromptWorkshopConfig:
+    enabled: bool = True
     service: str = "prompt_helper"
     startup_profile: str = "prompt_helper"
     endpoint: str = "http://127.0.0.1:8081/v1/chat/completions"

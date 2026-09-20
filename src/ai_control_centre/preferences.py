@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from .config import load_models
-from .domain import ModelConfig
+from .config import CURRENT_SETUP_SCHEMA, load_models
+from .domain import HarnessConfig, ModelConfig
 
 
 @dataclass(frozen=True)
@@ -107,7 +107,11 @@ def save_preferences(
     *,
     model_roots: tuple[Path, ...],
     task_models: Mapping[str, str | None],
+    agent_harness: str | None,
+    agent_base_services: tuple[str, ...],
+    harnesses: Mapping[str, HarnessConfig],
     prompt_model: str | None,
+    prompt_enabled: bool,
     prompt_auto_lightest: bool,
     prompt_processing_mode: str,
     prompt_keep_loaded: bool,
@@ -127,9 +131,13 @@ def save_preferences(
     settings.setdefault("paths", {})
     settings.setdefault("monitoring", {})
     settings["model_roots"] = {"llm": [str(path.expanduser()) for path in model_roots]}
-    settings["setup"] = {"completed": bool(setup_completed)}
+    settings["setup"] = {
+        "completed": bool(setup_completed),
+        "schema_version": CURRENT_SETUP_SCHEMA,
+    }
 
     prompt = settings.setdefault("prompt_workshop", {})
+    prompt["enabled"] = bool(prompt_enabled)
     prompt["model_strategy"] = "smallest" if prompt_auto_lightest else "manual"
     if prompt_model:
         prompt["preferred_model"] = prompt_model
@@ -148,6 +156,16 @@ def save_preferences(
     prompt["cache_type_v"] = prompt_cache_type_v
     prompt["endpoint"] = f"http://127.0.0.1:{int(prompt_port)}/v1/chat/completions"
 
+    harness_table = {}
+    profiles["harnesses"] = harness_table
+    for harness_id, harness in harnesses.items():
+        raw_harness = {}
+        harness_table[harness_id] = raw_harness
+        raw_harness["display_name"] = harness.display_name
+        raw_harness["services"] = list(harness.services)
+        if harness.open_service:
+            raw_harness["open_service"] = harness.open_service
+
     profile_table = profiles.setdefault("profiles", {})
     for profile_id, model_id in task_models.items():
         raw = profile_table.setdefault(profile_id, {})
@@ -155,13 +173,26 @@ def save_preferences(
             raw["default_model"] = model_id
         else:
             raw.pop("default_model", None)
+    agent = profile_table.setdefault("agent", {})
+    # V1 harnesses own the interface/runtime to open for Agent. Remove any
+    # profile-level V0.x value so future loads cannot resurrect the legacy
+    # relationship after migration.
+    agent.pop("open_service", None)
+    if agent_base_services:
+        agent["services"] = list(agent_base_services)
+    elif "services" in agent:
+        agent["services"] = []
+    if agent_harness:
+        agent["harness"] = agent_harness
+    else:
+        agent.pop("harness", None)
 
     write_toml_atomic(settings_path, settings)
     write_toml_atomic(profiles_path, profiles)
 
 
 def save_model_tuning(config_dir: Path, model: ModelConfig, values: Mapping, source: str = "manual") -> None:
-    from .tuning import validate_values
+    from .tuning import CURRENT_TUNING_SCHEMA, validate_values
     clean = validate_values(values)
     path = config_dir / "models.toml"
     data = _load_toml(path)
@@ -171,6 +202,7 @@ def save_model_tuning(config_dir: Path, model: ModelConfig, values: Mapping, sou
     table.update(clean)
     table["tuning_reviewed"] = True
     table["tuning_source"] = source
+    table["tuning_schema_version"] = CURRENT_TUNING_SCHEMA
     write_toml_atomic(path, data)
 
 

@@ -1,4 +1,4 @@
-"""Enlighten Tech colours and application-wide ttk styling; no service logic."""
+"""gbhobbytech colours and application-wide ttk styling; no service logic."""
 from __future__ import annotations
 
 import re

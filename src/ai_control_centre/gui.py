@@ -81,6 +81,7 @@ class ControlCentreWindow(tk.Tk):
         self.prompt_status_var = tk.StringVar(value="Draft a task or prompt to begin.")
 
         self._build_ui()
+        self._update_capabilities()
         style_classic(self)
         self.after(100, self._drain_events)
         self.after(150, self._poll_status)
@@ -90,13 +91,13 @@ class ControlCentreWindow(tk.Tk):
 
     def _build_ui(self) -> None:
         menu_bar = tk.Menu(self)
-        file_menu = tk.Menu(menu_bar, tearoff=False)
-        file_menu.add_command(label="Settings...", command=self._open_settings)
-        file_menu.add_command(label="Rescan Models", command=self._rescan_models)
-        file_menu.add_command(label="Run Setup Wizard...", command=self._open_setup_wizard)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.destroy)
-        menu_bar.add_cascade(label="File", menu=file_menu)
+        preferences_menu = tk.Menu(menu_bar, tearoff=False)
+        preferences_menu.add_command(label="Settings...", command=self._open_settings)
+        preferences_menu.add_command(label="Rescan Models", command=self._rescan_models)
+        preferences_menu.add_command(label="Run Setup Wizard...", command=self._open_setup_wizard)
+        preferences_menu.add_separator()
+        preferences_menu.add_command(label="Exit", command=self.destroy)
+        menu_bar.add_cascade(label="Preferences", menu=preferences_menu)
         self.configure(menu=menu_bar)
 
         outer = ttk.Frame(self, padding=16, style="Background.TFrame")
@@ -110,7 +111,7 @@ class ControlCentreWindow(tk.Tk):
         ttk.Label(
             header, text="AI Control Centre", style="Title.TLabel"
         ).grid(row=0, column=0, sticky="w")
-        ttk.Label(header, text="Enlighten Tech Education  |  Local AI services", style="Muted.TLabel").grid(
+        ttk.Label(header, text="gbhobbytech  |  Local AI services", style="Muted.TLabel").grid(
             row=0, column=1, sticky="e"
         )
 
@@ -437,6 +438,7 @@ class ControlCentreWindow(tk.Tk):
         self.prompt_client = PromptClient(self.prompt_config)
         self.gpu_monitor = create_gpu_monitor(config.settings.gpu_backend)
         self._rebuild_model_menu()
+        self._update_capabilities()
         self.status_var.set("Configuration saved and reloaded")
         self._refresh_all()
 
@@ -493,6 +495,73 @@ class ControlCentreWindow(tk.Tk):
         else:
             self.status_var.set(f"Model rescan complete - {len(after)} model(s) available")
 
+    def _task_capability(self, profile_id: str) -> tuple[bool, str]:
+        profile = self.config_data.profiles.get(profile_id)
+        if profile is None:
+            return False, f"{profile_id.title()} is not configured."
+        for service_id in profile.services:
+            if service_id not in self.config_data.services:
+                return False, f"Required service '{service_id}' is not configured."
+        if profile_id in {"coding", "chat", "agent"}:
+            model_id = profile.default_model
+            model = self.config_data.models.get(model_id) if model_id else None
+            if model is None or not model.complete:
+                return False, f"{profile.display_name} needs a complete default model."
+            if not model.tuning_reviewed:
+                return False, f"{model.display_name} needs launch configuration."
+        if profile_id == "agent":
+            if not profile.harness:
+                return False, "Agent unavailable - no Agent harness is configured."
+            harness = self.config_data.harnesses.get(profile.harness)
+            if harness is None:
+                return False, "Agent unavailable - the selected harness is missing."
+            missing = [sid for sid in harness.services if sid not in self.config_data.services]
+            if missing:
+                return False, "Agent harness has missing service(s): " + ", ".join(missing)
+        return True, "Ready"
+
+    def _prompt_helper_capability(self) -> tuple[bool, str]:
+        prompt = self.prompt_config
+        if not prompt.enabled:
+            return False, "Prompt Helper is disabled in Preferences."
+        if prompt.service not in self.config_data.services:
+            return False, "Prompt Helper service is not configured."
+        if prompt.model_strategy == "smallest":
+            model = smallest_complete_model(self.config_data.models)
+            if model is None:
+                return False, "No complete GGUF model is available for Prompt Helper."
+            return True, "Ready"
+        if prompt.model_strategy == "manual":
+            model = self.config_data.models.get(prompt.preferred_model) if prompt.preferred_model else None
+            if model is None or not model.complete:
+                return False, "Choose a complete Prompt Helper model in Preferences."
+            return True, "Ready"
+        service = self.config_data.services.get(prompt.service)
+        default_model = service.default_model if isinstance(service, ProcessServiceConfig) else None
+        model = self.config_data.models.get(default_model) if default_model else None
+        if model is None or not model.complete:
+            return False, "Prompt Helper has no usable model."
+        return True, "Ready"
+
+    def _update_capabilities(self) -> None:
+        self.capability_reasons = {}
+        for profile_id, button in self.task_buttons.items():
+            available, reason = self._task_capability(profile_id)
+            self.capability_reasons[profile_id] = reason
+            button.configure(state="normal" if available else "disabled")
+        prompt_available, prompt_reason = self._prompt_helper_capability()
+        self.capability_reasons["prompt_helper"] = prompt_reason
+        if hasattr(self, "improve_button"):
+            self.improve_button.configure(state="normal" if prompt_available else "disabled")
+        agent_available, _ = self._task_capability(self.prompt_config.agent_profile)
+        image_available, _ = self._task_capability(self.prompt_config.image_profile)
+        if hasattr(self, "agent_button"):
+            self.agent_button.configure(state="normal" if agent_available else "disabled")
+        if hasattr(self, "image_button"):
+            self.image_button.configure(state="normal" if image_available else "disabled")
+        if not prompt_available and hasattr(self, "prompt_status_var"):
+            self.prompt_status_var.set(prompt_reason)
+
     def _selected_model_override(self) -> str | None:
         value = self.model_var.get().strip()
         if not value or value == _TASK_DEFAULT:
@@ -540,6 +609,12 @@ class ControlCentreWindow(tk.Tk):
         on_ready: Callable[[object], None] | None = None,
         on_failure: Callable[[Exception], None] | None = None,
     ) -> bool:
+        available, reason = self._task_capability(profile_id)
+        if not available and profile_id != self.prompt_config.startup_profile:
+            self.status_var.set(reason)
+            if on_failure is not None:
+                on_failure(RuntimeError(reason))
+            return False
         profile = self.config_data.profiles[profile_id]
         model = (
             self._model_for_profile(profile_id)
@@ -810,10 +885,12 @@ class ControlCentreWindow(tk.Tk):
 
     def _set_prompt_busy(self, busy: bool) -> None:
         self.prompt_busy = busy
-        state = "disabled" if busy else "normal"
-        self.improve_button.configure(state=state)
-        self.agent_button.configure(state=state)
-        self.image_button.configure(state=state)
+        if busy:
+            self.improve_button.configure(state="disabled")
+            self.agent_button.configure(state="disabled")
+            self.image_button.configure(state="disabled")
+        else:
+            self._update_capabilities()
 
     def _copy_to_clipboard(self, prompt: str) -> bool:
         try:
@@ -834,6 +911,10 @@ class ControlCentreWindow(tk.Tk):
             self.prompt_status_var.set("Prompt copied to clipboard.")
 
     def _improve_prompt(self) -> None:
+        available, reason = self._prompt_helper_capability()
+        if not available:
+            self.prompt_status_var.set(reason)
+            return
         prompt = self._task_input()
         if not prompt:
             self.prompt_status_var.set("Enter a task to improve.")
@@ -1051,7 +1132,9 @@ class ControlCentreWindow(tk.Tk):
             self.active_model_var.set("None")
 
         helper_status = snapshot.get(self.prompt_config.service)
-        if isinstance(helper_status, Exception) or helper_status is None:
+        if not self.prompt_config.enabled:
+            self.prompt_helper_var.set("Disabled")
+        elif isinstance(helper_status, Exception) or helper_status is None:
             self.prompt_helper_var.set("Unavailable")
         elif helper_status.state in {ServiceState.READY, ServiceState.RUNNING_NOT_READY}:
             model_id = self.manager.running_model_id(self.prompt_config.service)
@@ -1117,7 +1200,7 @@ class ControlCentreWindow(tk.Tk):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="AI Control Centre V0.8.0 graphical interface"
+        description="AI Control Centre graphical interface"
     )
     parser.add_argument(
         "--config-dir",

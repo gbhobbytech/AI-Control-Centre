@@ -10,7 +10,8 @@ from .models import model_total_size_bytes
 from .monitoring import LinuxHostMonitor, create_gpu_monitor
 from .preferences import save_model_tuning
 from .theme import style_classic
-from .tuning import BASELINE, CACHE_TYPES, is_llama_service, model_values, running_settings, suggested_tuning_presets, validate_values
+from .ui_utils import ScrollableFrame, fit_window_to_screen
+from .tuning import BASELINE, CACHE_TYPES, CURRENT_TUNING_SCHEMA, is_llama_service, model_values, running_settings, suggested_tuning_presets, validate_values
 
 LABELS = {
     'recommended_gpu_layers': ('GPU layers', '0 keeps model layers in RAM. Increase gradually while watching VRAM.'),
@@ -24,10 +25,11 @@ LABELS = {
 
 
 class ModelTuningPanel(ttk.Frame):
-    def __init__(self, parent, config_dir, config, on_saved, on_launch=None, initial_model=None):
+    def __init__(self, parent, config_dir, config, on_saved, on_launch=None, initial_model=None, *, show_actions=True):
         super().__init__(parent, padding=12)
         self.config_dir, self.config = config_dir, config
         self.on_saved, self.on_launch = on_saved, on_launch
+        self.show_actions = show_actions
         self.models = dict(config.models)
         self.model_id = None
         self.dirty = False
@@ -87,12 +89,15 @@ class ModelTuningPanel(ttk.Frame):
         tools.grid(row=12, column=0, columnspan=3, sticky='ew', pady=(10, 6))
         ttk.Button(tools, text='Import from running server…', command=self._import).pack(side='left')
         ttk.Label(self, text='A successful launch confirms readiness, not performance. Watch VRAM and test a representative prompt before increasing context or GPU offload further.', wraplength=700, style='Muted.TLabel').grid(row=13, column=0, columnspan=3, sticky='w', pady=6)
-        actions = ttk.Frame(self)
-        actions.grid(row=14, column=0, columnspan=3, sticky='ew', pady=(6, 0))
-        self.save_button = ttk.Button(actions, text='Save model settings', style='Primary.TButton', command=self.save)
-        self.save_button.pack(side='left')
-        self.launch_button = ttk.Button(actions, text='Save & launch', command=lambda: self.save(launch=True))
-        self.launch_button.pack(side='left', padx=8)
+        self.save_button = None
+        self.launch_button = None
+        if self.show_actions:
+            actions = ttk.Frame(self)
+            actions.grid(row=14, column=0, columnspan=3, sticky='ew', pady=(6, 0))
+            self.save_button = ttk.Button(actions, text='Save model settings', style='Primary.TButton', command=self.save)
+            self.save_button.pack(side='left')
+            self.launch_button = ttk.Button(actions, text='Save & launch', command=lambda: self.save(launch=True))
+            self.launch_button.pack(side='left', padx=8)
         self.set_models(self.models, initial_model)
         style_classic(self)
 
@@ -174,8 +179,10 @@ class ModelTuningPanel(ttk.Frame):
         else:
             self.model_id = None
             self.model_label.set('No models found')
-            self.save_button.state(['disabled'])
-            self.launch_button.state(['disabled'])
+            if self.save_button is not None:
+                self.save_button.state(['disabled'])
+            if self.launch_button is not None:
+                self.launch_button.state(['disabled'])
 
     def select_model(self, model_id, force=False):
         if self.dirty and not force and not messagebox.askyesno('Unsaved model settings', 'Discard your unsaved model changes?', parent=self):
@@ -183,14 +190,17 @@ class ModelTuningPanel(ttk.Frame):
         self.model_id = model_id
         model = self.models[model_id]
         self.model_label.set(model.display_name)
-        self._fill(model_values(model))
+        self._fill(model_values(model) if model.tuning_reviewed else BASELINE)
         self.source = model.tuning_source if model.tuning_reviewed else 'manual'
-        state = 'Reviewed settings' if model.tuning_reviewed else 'Needs review before first launch'
-        self.status.set(f'{state} · {model.path}')
+        state = 'Configured for V1.0' if model.tuning_reviewed else 'Configuration required for V1.0'
+        detail = '' if model.tuning_reviewed else ' · Historical pre-V1 values are not active'
+        self.status.set(f'{state}{detail} · {model.path}')
         self._refresh_reckoner()
         self.dirty = False
-        self.save_button.state(['!disabled'])
-        self.launch_button.state(['!disabled'] if model.complete and self.on_launch else ['disabled'])
+        if self.save_button is not None:
+            self.save_button.state(['!disabled'])
+        if self.launch_button is not None:
+            self.launch_button.state(['!disabled'] if model.complete and self.on_launch else ['disabled'])
 
     def _fill(self, values):
         self.filling = True
@@ -276,10 +286,80 @@ class ModelTuningPanel(ttk.Frame):
         except Exception as exc:
             messagebox.showerror('Model settings', str(exc), parent=self)
             return False
-        self.models[model.id] = replace(model, **values, tuning_reviewed=True, tuning_source=self.source)
+        self.models[model.id] = replace(
+            model, **values, tuning_reviewed=True, tuning_source=self.source,
+            tuning_schema_version=CURRENT_TUNING_SCHEMA
+        )
         self.dirty = False
-        self.status.set('Saved. Applies on the next launch/restart; the running server has not been changed.')
+        self.status.set('Configured for V1.0. Applies on the next launch/restart; the running server has not been changed.')
         self.on_saved()
         if launch and self.on_launch:
             self.on_launch(model.id)
         return True
+
+
+class ModelTuningWindow(tk.Toplevel):
+    """Standalone model configuration window used by Setup Wizard.
+
+    The content scrolls when the desktop is short, while the Back / Save &
+    Continue action bar remains visible at all times.
+    """
+    def __init__(
+        self, parent, config_dir, config, on_saved, on_launch=None, initial_model=None,
+        *, setup_mode=False, on_continue=None, on_back=None,
+    ):
+        super().__init__(parent)
+        self.title('Configure model')
+        self.transient(parent)
+        self.setup_mode = setup_mode
+        self.on_continue = on_continue
+        self.on_back = on_back
+
+        outer = ttk.Frame(self, padding=(8, 8, 8, 10))
+        outer.pack(fill='both', expand=True)
+        outer.rowconfigure(0, weight=1)
+        outer.columnconfigure(0, weight=1)
+
+        scroll = ScrollableFrame(outer)
+        scroll.grid(row=0, column=0, sticky='nsew')
+        self.panel = ModelTuningPanel(
+            scroll.body, config_dir, config, on_saved, on_launch, initial_model,
+            show_actions=not setup_mode,
+        )
+        self.panel.pack(fill='both', expand=True)
+
+        if setup_mode:
+            actions = ttk.Frame(outer)
+            actions.grid(row=1, column=0, sticky='ew', pady=(10, 0))
+            actions.columnconfigure(1, weight=1)
+            ttk.Button(actions, text='Back', command=self._back).grid(row=0, column=0, sticky='w')
+            ttk.Button(
+                actions, text='Save & Continue', style='Primary.TButton',
+                command=self._save_and_continue,
+            ).grid(row=0, column=2, sticky='e')
+            self.protocol('WM_DELETE_WINDOW', self._back)
+
+        style_classic(self)
+        fit_window_to_screen(
+            self, preferred_width=1040, preferred_height=940,
+            min_width=820, min_height=600, margin_y=110,
+        )
+
+    def _back(self):
+        if self.panel.dirty and not messagebox.askyesno(
+            'Unsaved model settings',
+            'Return to setup without saving these model settings?',
+            parent=self,
+        ):
+            return
+        if self.on_back is not None:
+            self.on_back(self.panel.model_id)
+        self.destroy()
+
+    def _save_and_continue(self):
+        model_id = self.panel.model_id
+        if not self.panel.save(launch=False):
+            return
+        if self.on_continue is not None:
+            self.on_continue(model_id)
+        self.destroy()

@@ -1,10 +1,12 @@
 import shutil
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from ai_control_centre.config import ConfigError, load_app_config, load_settings
 from ai_control_centre.domain import DockerServiceConfig, ProcessServiceConfig
+from ai_control_centre.preferences import write_toml_atomic
 
 
 def test_load_orson_example():
@@ -53,9 +55,11 @@ def test_load_orson_example():
     assert chat.default_model == "qwen_qwen3_30b_a3b_instruct_2507_q4_k_m"
 
     agent = config.profiles["agent"]
-    assert agent.services == ("llama", "computer_dmz")
-    assert agent.open_service == "computer_dmz"
+    assert agent.services == ("llama",)
+    assert agent.harness == "computer_dmz"
     assert agent.default_model == "qwen_qwen3_30b_a3b_instruct_2507_q4_k_m"
+    assert config.harnesses["computer_dmz"].services == ("computer_dmz",)
+    assert config.harnesses["computer_dmz"].open_service == "computer_dmz"
 
 
 def test_prompt_workshop_rejects_non_http_endpoint(tmp_path: Path):
@@ -89,3 +93,32 @@ def test_prompt_workshop_rejects_unknown_profile(tmp_path: Path):
     )
     with pytest.raises(ConfigError, match="unknown profile 'missing'"):
         load_app_config(target)
+
+
+
+def test_disabled_prompt_helper_does_not_require_helper_service_or_profile(tmp_path: Path):
+    source = Path(__file__).resolve().parents[1] / "examples" / "orson"
+    target = tmp_path / "config"
+    shutil.copytree(source, target)
+
+    with (target / "settings.toml").open("rb") as fh:
+        settings = tomllib.load(fh)
+    settings["prompt_workshop"]["enabled"] = False
+    settings["prompt_workshop"]["startup_profile"] = "missing_prompt_helper"
+    settings["prompt_workshop"]["model_strategy"] = "manual"
+    settings["prompt_workshop"].pop("preferred_model", None)
+    write_toml_atomic(target / "settings.toml", settings)
+
+    with (target / "services.toml").open("rb") as fh:
+        services = tomllib.load(fh)
+    services["services"].pop("prompt_helper", None)
+    write_toml_atomic(target / "services.toml", services)
+
+    with (target / "profiles.toml").open("rb") as fh:
+        profiles = tomllib.load(fh)
+    profiles["profiles"].pop("prompt_helper", None)
+    write_toml_atomic(target / "profiles.toml", profiles)
+
+    loaded = load_app_config(target)
+    assert loaded.settings.prompt_workshop.enabled is False
+    assert "prompt_helper" not in loaded.services

@@ -1,6 +1,32 @@
 # AI Control Centre
 
-**Version 0.9.2** - adds a hardware-aware model-tuning ready reckoner.
+**Version 1.0.2** - V1 migration hotfix for harness-owned Agent open targets.
+
+## V1.0.2: Agent harness migration hotfix
+
+V1.0.2 fixes a V0.x-to-V1 migration edge case where a stale profile-level `open_service` could invalidate an Agent profile even though a valid V1 harness already owned the runtime/interface to open. V1 now ignores that legacy field whenever an Agent harness is selected and removes it when Setup or Preferences saves the migrated configuration.
+
+Model configuration launched from Setup now uses a scrollable window with a pinned **Back / Save & Continue** action bar so controls remain reachable on shorter desktops. Secondary setup/preferences windows are sized against the current screen rather than assuming a fixed desktop height.
+
+## V1.0.0: configuration reset and agent harnesses
+
+V1.0 deliberately treats all pre-V1 main-model launch tuning as historical rather than active. The first V1 launch forces the Setup Wizard again. Coding, Chat and Agent models must each be configured under the V1 model-tuning schema before setup can finish or the model can be assigned as a task default. Historical values remain in `models.toml` for safety, but the V1 tuning screen starts from neutral baseline values until the user saves a new configuration.
+
+Agent is now **model + harness**, rather than being permanently synonymous with Computer DMZ. Harnesses are declared in `profiles.toml` and can combine one or more configured services plus the interface to open. The bundled Orson reference uses `Computer DMZ`, while migrated V0.x Agent profiles are surfaced as an `Existing Agent Harness` so working environments are not silently lost.
+
+The main menu is now **Preferences** rather than File. The normal five-button interface remains Coding, Chat, Agent, Image and Stop All.
+
+### V1 setup flow
+
+1. detect host capabilities and model roots
+2. discover local GGUF models
+3. choose Coding, Chat and Agent models
+4. choose the Agent harness
+5. configure every selected task model using Conservative, Balanced, Maximum GPU or manual settings
+6. configure Prompt Helper behaviour
+7. review and save
+
+Settings remain available later under **Preferences > Settings...**, and newly discovered models cannot be saved as task defaults until they have V1 launch settings.
 
 ## V0.9.2: suggested starting settings
 
@@ -13,7 +39,7 @@ AI Control Centre is a lightweight, task-oriented Linux control panel for runnin
 
 ## V0.9.0: model tuning and appearance
 
-Open **File > Settings > Model tuning**, or use **Tune model…** on the main window.
+Open **Preferences > Settings > Model tuning**, or use **Tune model…** on the main window.
 Each main llama.cpp model has its own GPU layers, context length, maximum reply
 length, K/V cache formats, flash attention mode and startup timeout. Short hints
 explain the memory and compatibility trade-offs. Values are stored in models.toml.
@@ -47,10 +73,10 @@ in this release. The importer reads only supported launch arguments into the UI;
 it does not display credentials or copy arbitrary commands.
 
 Under **Appearance**, choose light/dark, primary/accent colours and text size.
-The default palette is Enlighten Tech deep blue (#16324F), copper (#B8734F),
+The default palette is gbhobbytech deep blue (#16324F), copper (#B8734F),
 graphite and light neutral surfaces. These are editable UI shades based on the
-business palette. Aptos is used if installed, with an available Linux fallback.
-Apply and save appearance updates the open windows. Restore brand defaults resets
+gbhobbytech palette. Aptos is used if installed, with an available Linux fallback.
+Apply and save appearance updates the open windows. Restore defaults resets
 the fields; apply to save them. No new application dependencies are required.
 
 ### Upgrade from 0.8
@@ -74,9 +100,8 @@ and comments may be rewritten. Each individual file is saved atomically.
 
 ### Validation and remaining limits
 
-The automated suite covers existing workflows and new tuning, validation,
-first-launch review, argument handling, restart detection and theme persistence.
-All 64 automated tests pass. A visual Tkinter check could not be completed because the test display environment could not start; check the window layout on your Linux desktop.
+The automated suite covers existing workflows, V1 migration, model tuning, harness discovery, optional capabilities, validation, argument handling, restart detection and theme persistence. The V1.0.2 development build passes 74 automated tests. A Tkinter smoke test also instantiates the Setup Wizard, Preferences and Configure Model windows under a virtual display to catch construction and screen-sizing regressions.
+
 Hardware-specific llama.cpp/GPU performance still needs testing on your computer.
 This release fixes the unready-process retry acceptance and adds launch exit
 codes; it does not claim to complete every item from the earlier audit. Startup
@@ -89,9 +114,9 @@ V0.8.0 was the **Setup & Configuration** release. It builds on the V0.7 Prompt W
 ## What V0.8.0 adds
 
 - First-run **Setup Wizard**.
-- `File > Run Setup Wizard...` to rerun guided setup later.
-- `File > Settings...` for permanent configuration changes.
-- `File > Rescan Models` for newly added GGUF files.
+- `Preferences > Run Setup Wizard...` to rerun guided setup later.
+- `Preferences > Settings...` for permanent configuration changes.
+- `Preferences > Rescan Models` for newly added GGUF files.
 - Editable LLM model roots with recursive model discovery.
 - Coding, Chat and Agent default-model selectors populated from discovered models.
 - Prompt Helper model selection with automatic lightest-model mode.
@@ -118,7 +143,7 @@ ai-control-centre setup
 or from:
 
 ```text
-File > Run Setup Wizard...
+Preferences > Run Setup Wizard...
 ```
 
 The wizard covers:
@@ -136,7 +161,7 @@ The wizard does not install packages or modify unrelated operating-system config
 Open:
 
 ```text
-File > Settings...
+Preferences > Settings...
 ```
 
 ### Models
@@ -260,7 +285,7 @@ Processing      Auto
 Keep loaded     Yes
 ```
 
-On Anthony's current library, automatic lightest-model selection should choose SmolLM3-3B Q8_0.
+On the Orson reference library, automatic lightest-model selection should choose SmolLM3-3B Q8_0.
 
 ## Upgrade from V0.7.x
 
@@ -280,7 +305,7 @@ python -m pip install -e .
 
 V0.8 understands V0.7 user configuration. If `[setup] completed = true` is not present, the Setup Wizard opens so the new choices can be reviewed and saved.
 
-You do not need to overwrite `models.toml` to discover a newly added model. Use **File > Rescan Models** or the Models page in Settings.
+You do not need to overwrite `models.toml` to discover a newly added model. Use **Preferences > Rescan Models** or the Models page in Settings.
 
 ## Run
 
@@ -316,4 +341,4 @@ This creates only the user-level desktop entry. It does not configure AI service
 PYTHONPATH=src python -m pytest -q
 ```
 
-V0.8.0 passes 43 automated tests in the development environment.
+The current V1.0.2 development build passes 74 automated tests in the development environment.

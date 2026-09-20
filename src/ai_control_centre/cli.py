@@ -67,7 +67,7 @@ def _show_model(config, model_id: str) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="AI Control Centre V0.8.0 CLI")
+    parser = argparse.ArgumentParser(description="AI Control Centre CLI")
     parser.add_argument(
         "--config-dir",
         type=Path,
