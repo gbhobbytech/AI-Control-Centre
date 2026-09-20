@@ -1,0 +1,22 @@
+[profiles.coding]
+display_name = "Coding"
+services = ["llama"]
+open_service = "llama"
+default_model = "qwen3_coder_30b_heretic"
+
+[profiles.chat]
+display_name = "Chat"
+services = ["llama"]
+open_service = "llama"
+default_model = "qwen_qwen3_30b_a3b_instruct_2507_q4_k_m"
+
+[profiles.agent]
+display_name = "Agent"
+services = ["llama", "computer_dmz"]
+open_service = "computer_dmz"
+default_model = "qwen_qwen3_30b_a3b_instruct_2507_q4_k_m"
+
+[profiles.image]
+display_name = "Image"
+services = ["comfyui"]
+open_service = "comfyui"

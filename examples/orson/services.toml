@@ -1,0 +1,72 @@
+[services.llama]
+display_name = "llama.cpp"
+type = "process"
+executable = "~/ai/apps/llama.cpp/build/bin/llama-server"
+cwd = "~/ai/apps/llama.cpp"
+default_model = "qwen3_coder_30b_heretic"
+args = [
+  "-m", "{model.path}",
+  "-ngl", "{model.recommended_gpu_layers}",
+  "--ctx-size", "{model.recommended_context_length}",
+  "--n-predict", "8192",
+  "--cache-type-k", "{model.cache_type_k}",
+  "--cache-type-v", "{model.cache_type_v}",
+  "--flash-attn", "on",
+  "--temp", "0.2",
+  "--host", "127.0.0.1",
+  "--port", "8080",
+]
+open_url = "http://127.0.0.1:8080"
+stop_timeout = 10
+log_max_bytes = 2000000
+gpu = true
+conflict_groups = ["large-gpu-workload"]
+
+[services.llama.model_defaults]
+recommended_gpu_layers = 22
+recommended_context_length = 65536
+cache_type_k = "q8_0"
+cache_type_v = "q8_0"
+
+[services.llama.health]
+url = "http://127.0.0.1:8080/health"
+expected_status = 200
+retry_interval = 1.0
+startup_timeout = 120.0
+request_timeout = 2.0
+
+[services.computer_dmz]
+display_name = "Computer DMZ"
+type = "docker"
+container_name = "cptr-dmz"
+open_url = "http://127.0.0.1:8001"
+stop_timeout = 10
+dependencies = ["llama"]
+
+[services.computer_dmz.health]
+url = "http://127.0.0.1:8001/openapi.json"
+expected_status = 200
+body_contains = "\"openapi\""
+retry_interval = 1.0
+startup_timeout = 60.0
+request_timeout = 2.0
+
+[services.comfyui]
+display_name = "ComfyUI"
+type = "process"
+executable = "~/ai/ComfyUI/venv/bin/python"
+cwd = "~/ai/ComfyUI"
+args = ["main.py"]
+open_url = "http://127.0.0.1:8188"
+stop_timeout = 10
+log_max_bytes = 2000000
+gpu = true
+conflict_groups = ["large-gpu-workload"]
+
+[services.comfyui.health]
+url = "http://127.0.0.1:8188/system_stats"
+expected_status = 200
+body_contains = "comfyui_version"
+retry_interval = 1.0
+startup_timeout = 120.0
+request_timeout = 2.0

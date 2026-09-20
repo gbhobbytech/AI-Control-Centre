@@ -1,0 +1,10 @@
+[paths]
+log_dir = "~/.local/state/ai-control-centre/logs"
+runtime_dir = "~/.local/state/ai-control-centre/processes"
+
+[model_roots]
+llm = ["~/ai/models/llm"]
+
+[monitoring]
+gpu_backend = "nvidia-smi"
+interval_seconds = 2.0
