@@ -19,4 +19,7 @@ family = "Qwen3"
 quant = "Q4_K_M"
 architecture = "moe"
 vision = false
-notes = "General-purpose default for Chat and Agent on the Orson reference configuration. Launch tuning falls back to the llama service defaults unless overridden later."
+notes = "General-purpose default for Chat and Agent on the Orson reference configuration. Review per-model tuning before first launch. Unset values use the conservative starting preset."
+
+# Hardware settings above are historical Orson examples, not portable fit guarantees.
+# Every main llama model must be reviewed in Settings > Model tuning before launch.

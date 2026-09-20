@@ -67,7 +67,7 @@ def _show_model(config, model_id: str) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="AI Control Centre V0.6 CLI")
+    parser = argparse.ArgumentParser(description="AI Control Centre V0.8.0 CLI")
     parser.add_argument(
         "--config-dir",
         type=Path,
@@ -129,6 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("stop-all", help="Stop launcher-owned services in reverse dependency order")
     sub.add_parser("gpu", help="Show current GPU status")
     sub.add_parser("gui", help="Open the graphical control centre")
+    sub.add_parser("setup", help="Open the graphical control centre and run the setup wizard")
 
     return parser
 
@@ -141,9 +142,12 @@ def main(argv: list[str] | None = None) -> int:
         config = load_app_config(args.config_dir.expanduser())
         manager = ServiceManager(config)
 
-        if args.command == "gui":
+        if args.command in {"gui", "setup"}:
             from .gui import main as gui_main
-            return gui_main(["--config-dir", str(args.config_dir.expanduser())])
+            gui_args = ["--config-dir", str(args.config_dir.expanduser())]
+            if args.command == "setup":
+                gui_args.append("--setup")
+            return gui_main(gui_args)
 
         if args.command == "gpu":
             monitor = create_gpu_monitor(config.settings.gpu_backend)

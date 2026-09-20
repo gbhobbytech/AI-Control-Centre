@@ -8,10 +8,10 @@ args = [
   "-m", "{model.path}",
   "-ngl", "{model.recommended_gpu_layers}",
   "--ctx-size", "{model.recommended_context_length}",
-  "--n-predict", "8192",
+  "--n-predict", "{model.max_output_tokens}",
   "--cache-type-k", "{model.cache_type_k}",
   "--cache-type-v", "{model.cache_type_v}",
-  "--flash-attn", "on",
+  "--flash-attn", "{model.flash_attention}",
   "--temp", "0.2",
   "--host", "127.0.0.1",
   "--port", "8080",
@@ -23,13 +23,44 @@ gpu = true
 conflict_groups = ["large-gpu-workload"]
 
 [services.llama.model_defaults]
-recommended_gpu_layers = 22
-recommended_context_length = 65536
-cache_type_k = "q8_0"
-cache_type_v = "q8_0"
+# Compatibility fallbacks; main llama launches require reviewed per-model settings.
+max_output_tokens = 2048
+flash_attention = "auto"
+recommended_gpu_layers = 0
+recommended_context_length = 4096
+cache_type_k = "f16"
+cache_type_v = "f16"
 
 [services.llama.health]
 url = "http://127.0.0.1:8080/health"
+expected_status = 200
+retry_interval = 1.0
+startup_timeout = 120.0
+request_timeout = 2.0
+
+
+[services.prompt_helper]
+display_name = "Prompt Helper"
+type = "process"
+executable = "~/ai/apps/llama.cpp/build/bin/llama-server"
+cwd = "~/ai/apps/llama.cpp"
+args = [
+  "-m", "{model.path}",
+  "-ngl", "0",
+  "--ctx-size", "4096",
+  "--n-predict", "2048",
+  "--cache-type-k", "q8_0",
+  "--cache-type-v", "q8_0",
+  "--temp", "0.2",
+  "--host", "127.0.0.1",
+  "--port", "8081",
+]
+stop_timeout = 10
+log_max_bytes = 1000000
+gpu = false
+
+[services.prompt_helper.health]
+url = "http://127.0.0.1:8081/health"
 expected_status = 200
 retry_interval = 1.0
 startup_timeout = 120.0

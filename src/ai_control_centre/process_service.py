@@ -27,11 +27,13 @@ class ProcessService:
         runtime_store: RuntimeStore,
         log_dir: Path,
         model_id: str | None = None,
+        launch_mode: str | None = None,
     ):
         self.config = config
         self.runtime_store = runtime_store
         self.log_dir = log_dir
         self.model_id = model_id
+        self.launch_mode = launch_mode
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -102,6 +104,12 @@ class ProcessService:
                         f"{running_model or 'unknown'}; requested {self.model_id}. "
                         "Stop the service before changing models."
                     )
+            record = self._owned_record()
+            if record is not None and record.command_sha256 != command_hash(self.config.command):
+                raise RuntimeError('Launch settings changed; stop this service before applying them.')
+            if current.state == ServiceState.RUNNING_NOT_READY and self.config.health is not None:
+                result = wait_until_ready(self.config.health, lambda: self._owned_record() is not None)
+                return ServiceStatus(ServiceState.READY if result.ok else ServiceState.ERROR, result.detail, current.pid)
             return current
         if current.state == ServiceState.EXTERNAL:
             raise RuntimeError(
@@ -149,6 +157,7 @@ class ProcessService:
                     executable=proc_executable(process.pid),
                     command_sha256=command_hash(self.config.command),
                     model_id=self.model_id,
+                    launch_mode=self.launch_mode,
                 )
                 break
             except (FileNotFoundError, ProcessLookupError, OSError):
@@ -180,7 +189,13 @@ class ProcessService:
         if result.ok:
             return ServiceStatus(ServiceState.READY, result.detail, record.pid)
 
-        return ServiceStatus(ServiceState.ERROR, result.detail, record.pid)
+        code = process.poll()
+        detail = result.detail
+        if code is not None:
+            self.runtime_store.delete(self.config.id)
+            detail += f" (exit code {code})"
+        detail += f"; see {self.log_path}"
+        return ServiceStatus(ServiceState.ERROR, detail, record.pid)
 
     def stop(self) -> ServiceStatus:
         record = self.runtime_store.load_process(self.config.id)

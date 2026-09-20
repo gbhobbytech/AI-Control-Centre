@@ -145,3 +145,31 @@ def render_model_args(
 def apply_model_overrides(base: ModelConfig, **overrides) -> ModelConfig:
     values = {key: value for key, value in overrides.items() if value is not None}
     return replace(base, **values)
+
+
+def model_total_size_bytes(model: ModelConfig) -> int | None:
+    """Return total on-disk GGUF size, summing split shards when present."""
+    paths = model.shard_paths or (model.path,)
+    total = 0
+    try:
+        for path in paths:
+            total += path.stat().st_size
+    except OSError:
+        return None
+    return total
+
+
+def smallest_complete_model(models: Mapping[str, ModelConfig]) -> ModelConfig | None:
+    """Choose the lightest complete local GGUF model with a measurable file size."""
+    candidates: list[tuple[int, str, ModelConfig]] = []
+    for model in models.values():
+        if not model.complete:
+            continue
+        size = model_total_size_bytes(model)
+        if size is None:
+            continue
+        candidates.append((size, model.id, model))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[0][2]

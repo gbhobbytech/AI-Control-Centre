@@ -18,6 +18,7 @@ class ProcessRecord:
     executable: str
     command_sha256: str
     model_id: str | None = None
+    launch_mode: str | None = None
 
 
 @dataclass

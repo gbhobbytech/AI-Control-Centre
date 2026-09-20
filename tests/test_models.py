@@ -5,7 +5,12 @@ import pytest
 from ai_control_centre.config import AppConfig, Settings, load_models
 from ai_control_centre.domain import ModelConfig, ProcessServiceConfig
 from ai_control_centre.manager import ServiceManager
-from ai_control_centre.models import discover_models, render_model_args
+from ai_control_centre.models import (
+    discover_models,
+    model_total_size_bytes,
+    render_model_args,
+    smallest_complete_model,
+)
 
 
 def _touch(path: Path) -> Path:
@@ -121,3 +126,43 @@ def test_manager_renders_requested_model_without_mutating_base_service(tmp_path:
     controller = manager._controller_for_start("llama", "b")
     assert controller.config.args == ("-m", str(b.path))
     assert service.args == ("-m", "{model.path}")
+
+
+def test_smallest_complete_model_uses_total_split_size(tmp_path: Path):
+    small = _touch(tmp_path / "small.gguf")
+    small.write_bytes(b"x" * 10)
+    split_a = _touch(tmp_path / "split-00001-of-00002.gguf")
+    split_b = _touch(tmp_path / "split-00002-of-00002.gguf")
+    split_a.write_bytes(b"x" * 8)
+    split_b.write_bytes(b"x" * 8)
+
+    small_model = ModelConfig(
+        id="small",
+        display_name="Small",
+        path=small,
+        shard_paths=(small,),
+    )
+    split_model = ModelConfig(
+        id="split",
+        display_name="Split",
+        path=split_a,
+        shard_paths=(split_a, split_b),
+        expected_shards=2,
+    )
+
+    assert model_total_size_bytes(split_model) == 16
+    assert smallest_complete_model({"split": split_model, "small": small_model}) == small_model
+
+
+def test_smallest_complete_model_ignores_incomplete_models(tmp_path: Path):
+    tiny = _touch(tmp_path / "tiny.gguf")
+    large = _touch(tmp_path / "large.gguf")
+    tiny.write_bytes(b"x")
+    large.write_bytes(b"x" * 20)
+    incomplete = ModelConfig(
+        id="tiny", display_name="Tiny", path=tiny, shard_paths=(tiny,), complete=False
+    )
+    complete = ModelConfig(
+        id="large", display_name="Large", path=large, shard_paths=(large,), complete=True
+    )
+    assert smallest_complete_model({"tiny": incomplete, "large": complete}) == complete

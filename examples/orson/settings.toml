@@ -8,3 +8,30 @@ llm = ["~/ai/models/llm"]
 [monitoring]
 gpu_backend = "nvidia-smi"
 interval_seconds = 2.0
+
+[setup]
+completed = false
+
+[prompt_workshop]
+service = "prompt_helper"
+startup_profile = "prompt_helper"
+endpoint = "http://127.0.0.1:8081/v1/chat/completions"
+request_timeout_seconds = 120.0
+temperature = 0.2
+model_strategy = "smallest"
+processing_mode = "auto"
+keep_loaded = true
+context_length = 4096
+port = 8081
+startup_timeout_seconds = 60.0
+cache_type_k = "q8_0"
+cache_type_v = "q8_0"
+agent_profile = "agent"
+image_profile = "image"
+system_instruction = "Rewrite the user's request into a clear, effective prompt. Preserve intent. Improve specificity, clarity, subject description, style, composition and useful constraints. Do not add unnecessary complexity. Return only the refined prompt."
+
+[appearance]
+mode = "light"
+primary = "#16324F"
+accent = "#B8734F"
+font_size = 10
