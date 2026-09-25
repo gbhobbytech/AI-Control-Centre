@@ -32,8 +32,9 @@ def test_seed_config_creates_loadable_fresh_configuration(tmp_path: Path) -> Non
 
     config = load_app_config(config_dir)
     assert config.settings.setup_completed is False
-    assert config.profiles["coding"].selected_model == "setup_placeholder"
-    assert config.profiles["chat"].selected_model == "setup_placeholder"
+    assert config.models == {}
+    assert config.profiles["coding"].selected_model is None
+    assert config.profiles["chat"].selected_model is None
 
 
 def test_seed_config_preserves_existing_user_files(tmp_path: Path) -> None:
