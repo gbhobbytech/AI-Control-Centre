@@ -759,7 +759,12 @@ class SetupWizard(tk.Toplevel):
     def _page_models(self, p) -> None:
         p.columnconfigure(0, weight=1); p.rowconfigure(3, weight=1)
         ttk.Label(p, text="Model discovery", font=("TkDefaultFont", 12, "bold")).grid(row=0,column=0,sticky="w")
-        ttk.Label(p, text="Enter one LLM model root per line.").grid(row=1,column=0,sticky="w",pady=(4,6))
+        ttk.Label(
+            p,
+            text="Enter one LLM model root per line. Only complete GGUF models can be selected for tasks. "
+                 "Configured models whose files no longer exist are shown as missing, not as discovered models.",
+            wraplength=760,
+        ).grid(row=1,column=0,sticky="w",pady=(4,6))
         self.root_text=tk.Text(p,height=5); self.root_text.grid(row=2,column=0,sticky="ew"); self.root_text.insert("1.0",self.root_var.get())
         self.model_list=tk.Listbox(p,height=12); self.model_list.grid(row=3,column=0,sticky="nsew",pady=8)
         ttk.Button(p,text="Rescan Models",command=self._scan).grid(row=4,column=0,sticky="w")
@@ -965,22 +970,56 @@ class SetupWizard(tk.Toplevel):
         ttk.Label(p,text="Review",font=("TkDefaultFont",12,"bold")).pack(anchor="w")
         self.review_text=tk.Text(p,height=18,wrap="word",state="disabled"); self.review_text.pack(fill="both",expand=True,pady=10)
 
-    def _scan(self) -> None:
+    def _scan(self) -> bool:
         try:
             roots=tuple(Path(x.strip()).expanduser() for x in self.root_text.get("1.0","end-1c").splitlines() if x.strip())
             if not roots: raise ValueError("At least one model root is required")
             self.state_data.scan(roots)
         except Exception as exc:
-            messagebox.showerror("Model discovery",str(exc),parent=self); return
+            messagebox.showerror("Model discovery",str(exc),parent=self); return False
         self._fill_model_list()
         for task,menu in self.task_menus.items(): menu.set_models(self.state_data.models,menu.selected_id() or self.state_data.task_models.get(task))
         if hasattr(self,"prompt_menu"): self.prompt_menu.set_models(self.state_data.models,self.prompt_menu.selected_id() or self.state_data.prompt_model,allow_none=True)
-        self.status_var.set(f"Found {len(self.state_data.models)} model(s)")
+
+        complete = sum(1 for model in self.state_data.models.values() if model.complete)
+        missing_configured = sum(
+            1 for model in self.state_data.models.values()
+            if not model.complete and not model.discovered
+        )
+        incomplete_discovered = sum(
+            1 for model in self.state_data.models.values()
+            if not model.complete and model.discovered
+        )
+        detail = [f"{complete} complete"]
+        if missing_configured:
+            detail.append(f"{missing_configured} configured path(s) missing")
+        if incomplete_discovered:
+            detail.append(f"{incomplete_discovered} incomplete discovery result(s)")
+        self.status_var.set("Models: " + "; ".join(detail))
+
+        if complete == 0:
+            messagebox.showwarning(
+                "No complete GGUF models found",
+                "AI Control Centre did not find a complete GGUF model in the model roots shown above.\n\n"
+                "Missing configured model paths do not count as discovered models. "
+                "Choose the correct model folder or install/copy a GGUF model there, then Rescan Models.\n\n"
+                "Setup will remain incomplete until at least one complete model is available for Coding and Chat.",
+                parent=self,
+            )
+            return False
+        return True
 
     def _fill_model_list(self) -> None:
         if not hasattr(self,"model_list"): return
         self.model_list.delete(0,"end")
-        for m in self.state_data.models.values(): self.model_list.insert("end",_model_label(m))
+        for model in self.state_data.models.values():
+            if model.complete:
+                prefix = "[READY]"
+            elif not model.discovered:
+                prefix = "[MISSING CONFIG]"
+            else:
+                prefix = "[INCOMPLETE]"
+            self.model_list.insert("end", f"{prefix} {_model_label(model)}")
 
     def _show_page(self,index:int) -> None:
         self.page=index
@@ -995,7 +1034,8 @@ class SetupWizard(tk.Toplevel):
         if self.page>0: self._show_page(self.page-1)
 
     def _next(self) -> None:
-        if self.page==1: self._scan()
+        if self.page==1 and not self._scan():
+            return
         if self.page==2:
             for task in ("coding", "chat"):
                 menu = self.task_menus[task]
