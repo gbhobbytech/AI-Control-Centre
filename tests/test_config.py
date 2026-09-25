@@ -122,3 +122,38 @@ def test_disabled_prompt_helper_does_not_require_helper_service_or_profile(tmp_p
     loaded = load_app_config(target)
     assert loaded.settings.prompt_workshop.enabled is False
     assert "prompt_helper" not in loaded.services
+
+
+def test_incomplete_setup_allows_missing_configured_models(tmp_path: Path):
+    root = Path(__file__).resolve().parents[1]
+    source = root / "packaging" / "default-config"
+    target = tmp_path / "config"
+    shutil.copytree(source, target)
+
+    with (target / "models.toml").open("a", encoding="utf-8") as fh:
+        fh.write(
+            '\n[models.stale]\n'
+            'display_name = "Stale configured model"\n'
+            'path = "~/does-not-exist/stale.gguf"\n'
+        )
+
+    loaded = load_app_config(target)
+    assert loaded.settings.setup_completed is False
+    assert "stale" in loaded.models
+    assert loaded.models["stale"].complete is False
+    assert loaded.models["stale"].discovered is False
+
+
+def test_completed_setup_rejects_model_service_with_no_models(tmp_path: Path):
+    root = Path(__file__).resolve().parents[1]
+    source = root / "packaging" / "default-config"
+    target = tmp_path / "config"
+    shutil.copytree(source, target)
+
+    with (target / "settings.toml").open("rb") as fh:
+        settings = tomllib.load(fh)
+    settings["setup"] = {"completed": True, "schema_version": 2}
+    write_toml_atomic(target / "settings.toml", settings)
+
+    with pytest.raises(ConfigError, match="no models are configured or discovered"):
+        load_app_config(target)
