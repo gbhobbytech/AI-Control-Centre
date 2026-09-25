@@ -156,6 +156,13 @@ EOF
 
 chmod +x "${BIN_DIR}/ai-control-centre"
 
+echo "Initialising user configuration..."
+
+bash "${INSTALL_DIR}/installer/seed-config.sh" \
+    "${INSTALL_DIR}/packaging/default-config" \
+    "${HOME}/.config/${APP_NAME}"
+
+echo
 echo "Installing application icon..."
 
 cp \
