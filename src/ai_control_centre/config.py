@@ -666,6 +666,7 @@ def load_app_config(config_dir: Path) -> AppConfig:
             and service.uses_model
             and service.default_model is None
             and not models
+            and settings.setup_completed
         ):
             raise ConfigError(
                 f"service '{service_id}' uses model placeholders but no models are configured or discovered"
