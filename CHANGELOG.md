@@ -4,6 +4,13 @@ Notable changes to AI Control Centre are recorded here.
 
 This file is intentionally concise. Detailed implementation history remains available in the Git commit log.
 
+## 1.0.8
+
+- Removed the installer's unnecessary pip upgrade and package-install steps.
+- Made installation independent of PyPI/network access.
+- Launches the installed application directly from its copied source tree using the private virtual environment.
+- Added regression coverage to prevent reintroducing a pip/network dependency.
+
 ## 1.0.7
 
 - Added prerequisite checks before modifying an existing installation.
