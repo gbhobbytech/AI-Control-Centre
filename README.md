@@ -1,6 +1,207 @@
 # AI Control Centre
 
-**Version 1.0.2** - V1 migration hotfix for harness-owned Agent open targets.
+**Current development version: 1.0.7** - Linux packaging and installer prerequisite handling.
+
+AI Control Centre is a lightweight, task-oriented Linux control panel for running several local AI tools on one computer, particularly when GPU memory and other resources are limited.
+
+Instead of keeping the entire AI stack running, the Control Centre starts the services needed for the selected task, checks readiness, exposes useful system status and keeps machine-specific paths and launch settings in user configuration.
+
+The normal task controls are:
+
+- **Coding** - launch the configured coding LLM environment
+- **Chat** - launch the configured general chat LLM environment
+- **Agent** - launch a selected model plus an Agent harness
+- **Image** - launch the configured image-generation environment
+- **Stop All** - stop launcher-owned services in dependency-aware order
+
+The lower workspace combines a compact **System** panel with **Prompt Workshop** for prompt drafting and refinement.
+
+## Install - recommended desktop application method
+
+AI Control Centre currently targets desktop Linux and requires:
+
+- Bash
+- Python **3.11 or newer**
+- Python virtual-environment support (`python3 -m venv`)
+- Tkinter for Python 3
+- `rsync`
+
+Download or clone the project, then run:
+
+~~~bash
+chmod +x installer/install.sh installer/uninstall.sh
+./installer/install.sh
+~~~
+
+The installer performs its prerequisite checks **before changing an existing installation**. It verifies that Python is new enough, Tkinter imports correctly, `rsync` exists, and `python3 -m venv` can actually create a temporary virtual environment.
+
+This matters on clean Ubuntu-family systems where `python3` may already exist while the separate virtual-environment package is not installed.
+
+If a prerequisite is missing, the installer stops and prints appropriate package guidance. It does **not** automatically run `sudo` or alter system packages.
+
+For Ubuntu, Pop!_OS, Linux Mint or Debian, the usual prerequisite command is:
+
+~~~bash
+sudo apt update
+sudo apt install -y python3-venv python3-tk rsync
+~~~
+
+For Fedora:
+
+~~~bash
+sudo dnf install python3 python3-tkinter rsync
+~~~
+
+For Arch Linux:
+
+~~~bash
+sudo pacman -S python tk rsync
+~~~
+
+The user-level installation is placed under:
+
+~~~text
+~/.local/share/ai-control-centre
+~~~
+
+The installer also creates:
+
+~~~text
+~/.local/bin/ai-control-centre
+~/.local/share/applications/ai-control-centre.desktop
+~/.local/share/icons/hicolor/256x256/apps/ai-control-centre.png
+~~~
+
+User configuration remains separate under:
+
+~~~text
+~/.config/ai-control-centre
+~~~
+
+Runtime state remains separate under:
+
+~~~text
+~/.local/state/ai-control-centre
+~~~
+
+Re-running the installer updates the application without deleting those user configuration or state directories.
+
+## V1.0.7
+
+V1.0.7 hardens the Linux application packaging introduced in V1.0.6 and brings the README and version metadata into line with the current application.
+
+Changes include:
+
+- prerequisite checks before the installer replaces application files
+- a real temporary `venv` creation test rather than assuming virtual-environment support is installed
+- clear dependency guidance for Ubuntu/Pop!_OS/Mint/Debian, Fedora and Arch
+- Tkinter, Python-version, `rsync` and source-tree validation
+- preservation of an existing installation when preflight fails
+- package version metadata aligned at 1.0.7
+- current packaged install, update and uninstall instructions
+- remembered main-window size from the V1.0.6 packaging work
+
+## Launch
+
+Open **AI Control Centre** from the Linux Applications menu, or run:
+
+~~~bash
+ai-control-centre gui
+~~~
+
+If `~/.local/bin` is not yet on your shell `PATH`, use:
+
+~~~bash
+~/.local/bin/ai-control-centre gui
+~~~
+
+Run Setup explicitly with:
+
+~~~bash
+ai-control-centre setup
+~~~
+
+## First run and V1 setup
+
+V1 deliberately treats pre-V1 main-model launch tuning as historical rather than active. Coding, Chat and Agent models must be reviewed and saved under the V1 tuning schema before they can be used as task defaults.
+
+The Setup Wizard guides the user through:
+
+1. detected host capabilities and model roots
+2. local GGUF model discovery
+3. Coding, Chat and Agent model selection
+4. Agent harness selection
+5. model tuning for every selected task model
+6. Prompt Helper behaviour
+7. review and save
+
+Settings remain available under **Preferences > Settings...** and models can be rediscovered with **Preferences > Rescan Models**.
+
+## Agent harnesses
+
+Agent is **model + harness** rather than being permanently tied to one automation runtime.
+
+A harness can combine one or more configured services plus the interface that should be opened when the harness becomes ready. The bundled Orson reference uses Computer DMZ, while migrated V0.x Agent configurations can be surfaced as an **Existing Agent Harness** rather than being silently discarded.
+
+## Current V1 capabilities
+
+The current application includes:
+
+- recursive local GGUF discovery, including split models
+- Coding, Chat and Agent task defaults
+- Agent harness selection
+- per-model GPU layers, context length, output length, K/V cache, flash-attention and startup-timeout settings
+- Conservative, Balanced and Maximum GPU starting suggestions
+- optional import of supported launch values from a matching running llama.cpp process
+- Prompt Helper CPU, GPU and Auto processing modes
+- Prompt Workshop with editable refinement output, clipboard copy and task hand-off
+- service readiness checks, logs and dependency-aware profile startup
+- live CPU, RAM, GPU, VRAM and temperature monitoring where supported
+- appearance settings using the gbhobbytech deep-blue/copper defaults
+- remembered main-window size
+- user-level desktop installation and uninstall support
+
+AI Control Centre does **not** install the complete AI stack for the user. Services such as llama.cpp, ComfyUI and Docker-based Agent harnesses remain user-installed and user-configured.
+
+## Update
+
+Stop launcher-owned services first, then run the installer from the newer downloaded or cloned source tree:
+
+~~~bash
+ai-control-centre stop-all
+./installer/install.sh
+~~~
+
+The application files are replaced while `~/.config/ai-control-centre` and `~/.local/state/ai-control-centre` remain separate.
+
+## Uninstall
+
+From a downloaded or cloned source tree:
+
+~~~bash
+./installer/uninstall.sh
+~~~
+
+The uninstaller removes the installed application, launcher, desktop entry and icon. It deliberately leaves user configuration, runtime state, models, llama.cpp, ComfyUI, Docker data and other AI tools untouched.
+
+## Developer install
+
+For development, an editable virtual-environment install is still supported:
+
+~~~bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+~~~
+
+Run tests with:
+
+~~~bash
+PYTHONPATH=src python -m pytest -q
+~~~
+
+## Historical release notes
 
 ## V1.0.2: Agent harness migration hotfix
 
@@ -341,4 +542,4 @@ This creates only the user-level desktop entry. It does not configure AI service
 PYTHONPATH=src python -m pytest -q
 ```
 
-The current V1.0.2 development build passes 74 automated tests in the development environment.
+The V1.0.2 development build passed 74 automated tests in the development environment.

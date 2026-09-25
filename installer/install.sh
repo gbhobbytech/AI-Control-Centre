@@ -12,6 +12,96 @@ BIN_DIR="${HOME}/.local/bin"
 APPLICATIONS_DIR="${HOME}/.local/share/applications"
 ICON_DIR="${HOME}/.local/share/icons/hicolor/256x256/apps"
 
+print_dependency_help() {
+    echo
+    echo "Install the missing prerequisites, then run this installer again."
+    echo
+
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "Ubuntu / Pop!_OS / Linux Mint / Debian:"
+        echo "  sudo apt update"
+        echo "  sudo apt install -y python3-venv python3-tk rsync"
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "Fedora:"
+        echo "  sudo dnf install python3 python3-tkinter rsync"
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "Arch Linux:"
+        echo "  sudo pacman -S python tk rsync"
+    else
+        echo "Required components:"
+        echo "  Python 3.11 or newer"
+        echo "  Python virtual-environment support (python3 -m venv)"
+        echo "  Tkinter for Python 3"
+        echo "  rsync"
+        echo
+        echo "Use your distribution's package manager to install the missing items."
+    fi
+}
+
+preflight() {
+    local failed=0
+    local venv_test_dir=""
+    local venv_error=""
+
+    echo "Checking prerequisites..."
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "ERROR: python3 was not found."
+        failed=1
+    else
+        if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+            echo "ERROR: ${DISPLAY_NAME} requires Python 3.11 or newer."
+            echo "       Found: $(python3 --version 2>&1)"
+            failed=1
+        fi
+
+        if ! python3 -c 'import tkinter' >/dev/null 2>&1; then
+            echo "ERROR: Python Tkinter support is not available."
+            failed=1
+        fi
+
+        venv_test_dir="$(mktemp -d "${TMPDIR:-/tmp}/${APP_NAME}-venv-check.XXXXXX")"
+        venv_error="${venv_test_dir}/venv-error.log"
+        if ! python3 -m venv "${venv_test_dir}/venv" >/dev/null 2>"${venv_error}"; then
+            echo "ERROR: Python virtual-environment support is not available or could not create an environment."
+            echo "       The installer needs 'python3 -m venv' to create its private environment."
+            if [[ -s "${venv_error}" ]]; then
+                echo
+                echo "Python reported:"
+                sed -n '1,8{s/^/  /;p;}' "${venv_error}"
+            fi
+            failed=1
+        fi
+        rm -rf "${venv_test_dir}"
+    fi
+
+    if ! command -v rsync >/dev/null 2>&1; then
+        echo "ERROR: rsync was not found."
+        failed=1
+    fi
+
+    if [[ ! -f "${SOURCE_DIR}/pyproject.toml" ]]; then
+        echo "ERROR: pyproject.toml is missing from the source tree."
+        failed=1
+    fi
+
+    if [[ ! -f "${SOURCE_DIR}/assets/icons/ai-control-centre-256.png" ]]; then
+        echo "ERROR: the application icon is missing from the source tree."
+        failed=1
+    fi
+
+    if (( failed != 0 )); then
+        print_dependency_help
+        echo
+        echo "No existing ${DISPLAY_NAME} installation was changed."
+        exit 1
+    fi
+
+    echo "Prerequisites OK."
+    echo
+}
+
+
 echo
 echo "========================================"
 echo "  AI Control Centre Installer"
@@ -25,6 +115,9 @@ echo
 echo "Install location:"
 echo "  ${INSTALL_DIR}"
 echo
+
+# Run all dependency checks before changing an existing installation.
+preflight
 
 mkdir -p "${HOME}/.local/share"
 mkdir -p "${BIN_DIR}"
