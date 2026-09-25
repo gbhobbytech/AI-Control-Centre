@@ -35,6 +35,8 @@ chmod +x installer/install.sh installer/uninstall.sh
 
 The installer performs its prerequisite checks **before changing an existing installation**. It verifies that Python is new enough, Tkinter imports correctly, `rsync` exists, and `python3 -m venv` can actually create a temporary virtual environment.
 
+On a fresh install, it also creates any missing user configuration files under `~/.config/ai-control-centre` from neutral starter defaults so the Setup Wizard can open immediately. Existing configuration files are never overwritten; reinstalling or updating preserves user-edited settings.
+
 This matters on clean Ubuntu-family systems where `python3` may already exist while the separate virtual-environment package is not installed.
 
 If a prerequisite is missing, the installer stops and prints appropriate package guidance. It does **not** automatically run `sudo` or alter system packages.
@@ -93,6 +95,8 @@ V1.0.7 hardens the Linux application packaging introduced in V1.0.6 and brings t
 Changes include:
 
 - prerequisite checks before the installer replaces application files
+- fresh-install configuration bootstrap so the Setup Wizard no longer fails when `settings.toml` is absent
+- non-destructive config seeding: existing user configuration files are preserved on reinstall/update
 - a real temporary `venv` creation test rather than assuming virtual-environment support is installed
 - clear dependency guidance for Ubuntu/Pop!_OS/Mint/Debian, Fedora and Arch
 - Tkinter, Python-version, `rsync` and source-tree validation
