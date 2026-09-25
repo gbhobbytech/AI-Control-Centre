@@ -218,3 +218,7 @@ PYTHONPATH=src python -m pytest -q
 AI Control Centre is intentionally a small, task-oriented control layer rather than a general AI application catalogue, model marketplace or infrastructure dashboard.
 
 Its focus is user-configured local AI services on Linux, particularly systems where GPU memory and other resources need to be managed carefully.
+
+## Licence
+
+AI Control Centre is released under the MIT License. See [LICENSE](LICENSE).

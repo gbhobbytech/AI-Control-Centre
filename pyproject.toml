@@ -7,6 +7,7 @@ name = "ai-control-centre"
 version = "1.0.7"
 description = "Task-oriented Linux control panel for user-configured local AI services"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
 dependencies = []
 keywords = ["local-ai", "llama-cpp", "comfyui", "linux", "llm"]
