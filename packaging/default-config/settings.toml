@@ -1,0 +1,26 @@
+# Starter user configuration for a fresh AI Control Centre install.
+# The Setup Wizard will review model roots and task choices before marking setup complete.
+
+[paths]
+log_dir = "~/.local/state/ai-control-centre/logs"
+runtime_dir = "~/.local/state/ai-control-centre/processes"
+
+[model_roots]
+llm = ["~/ai/models/llm"]
+
+[monitoring]
+gpu_backend = "auto"
+interval_seconds = 2.0
+
+[setup]
+completed = false
+schema_version = 2
+
+[prompt_workshop]
+enabled = false
+
+[appearance]
+mode = "light"
+primary = "#16324F"
+accent = "#B8734F"
+font_size = 10
