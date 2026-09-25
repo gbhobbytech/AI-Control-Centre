@@ -147,7 +147,7 @@ Machine-specific paths, ports and model choices are kept outside the main progra
 Reference configuration for the original development workstation is available under:
 
 ```text
-examples/orson/
+examples/reference/
 ```
 
 It is an example, not a required directory layout.
