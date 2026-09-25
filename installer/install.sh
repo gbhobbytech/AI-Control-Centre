@@ -141,17 +141,12 @@ echo "Creating Python environment..."
 
 python3 -m venv "${INSTALL_DIR}/.venv"
 
-"${INSTALL_DIR}/.venv/bin/python" \
-    -m pip install --upgrade pip
-
-"${INSTALL_DIR}/.venv/bin/python" \
-    -m pip install "${INSTALL_DIR}"
-
 echo "Installing launcher..."
 
 cat > "${BIN_DIR}/ai-control-centre" <<EOF
 #!/usr/bin/env bash
-exec "${INSTALL_DIR}/.venv/bin/ai-control-centre" "\$@"
+export PYTHONPATH="${INSTALL_DIR}/src\${PYTHONPATH:+:\${PYTHONPATH}}"
+exec "${INSTALL_DIR}/.venv/bin/python" -m ai_control_centre.cli "\$@"
 EOF
 
 chmod +x "${BIN_DIR}/ai-control-centre"

@@ -67,3 +67,12 @@ def test_seed_config_reinstall_does_not_change_seeded_files(tmp_path: Path) -> N
 
     assert after == before
     assert "Existing user configuration preserved." in result.stdout
+
+
+def test_installer_does_not_require_pip_or_network() -> None:
+    installer = (ROOT / "installer" / "install.sh").read_text(encoding="utf-8")
+
+    assert "pip install" not in installer
+    assert "pip install --upgrade" not in installer
+    assert '-m ai_control_centre.cli' in installer
+    assert 'PYTHONPATH="${INSTALL_DIR}/src' in installer
