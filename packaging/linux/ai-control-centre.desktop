@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=AI Control Centre
+Comment=Manage local AI models, services and workloads
+Exec=ai-control-centre gui
+Icon=ai-control-centre
+Terminal=false
+Categories=Utility;Development;
+StartupNotify=true
+Keywords=AI;LLM;llama;ComfyUI;local AI;

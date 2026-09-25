@@ -19,6 +19,7 @@ from .domain import ProcessServiceConfig, ServiceState
 from .manager import ServiceManager
 from .models import smallest_complete_model
 from .monitoring import GpuStatus, HostStatus, LinuxHostMonitor, create_gpu_monitor
+from .preferences import save_window_size
 from .prompt_client import PromptClient, prompt_service_action, select_prompt
 from .settings_ui import SettingsWindow, SetupWizard
 from .theme import apply_theme, style_classic
@@ -42,11 +43,11 @@ class ControlCentreWindow(tk.Tk):
     def __init__(self, config_dir: Path, *, force_setup: bool = False):
         super().__init__()
         self.title("AI Control Centre")
-        self.geometry("1180x900")
         self.minsize(980, 720)
 
         self.config_dir = config_dir
         self.config_data = load_app_config(config_dir)
+        self._restore_window_size()
         apply_theme(self, self.config_data.settings.appearance)
         self.manager = ServiceManager(self.config_data)
         self.gpu_monitor = create_gpu_monitor(self.config_data.settings.gpu_backend)
@@ -86,8 +87,24 @@ class ControlCentreWindow(tk.Tk):
         self.after(100, self._drain_events)
         self.after(150, self._poll_status)
         self.after(250, self._poll_system)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         if force_setup or not self.config_data.settings.setup_completed:
             self.after(500, self._open_setup_wizard)
+
+    def _restore_window_size(self) -> None:
+        settings = self.config_data.settings
+        screen_width = max(980, self.winfo_screenwidth())
+        screen_height = max(720, self.winfo_screenheight())
+        width = min(max(980, settings.window_width), screen_width)
+        height = min(max(720, settings.window_height), screen_height)
+        self.geometry(f"{width}x{height}")
+
+    def _on_close(self) -> None:
+        try:
+            self.update_idletasks()
+            save_window_size(self.config_dir, self.winfo_width(), self.winfo_height())
+        finally:
+            self.destroy()
 
     def _build_ui(self) -> None:
         menu_bar = tk.Menu(self)
@@ -96,7 +113,7 @@ class ControlCentreWindow(tk.Tk):
         preferences_menu.add_command(label="Rescan Models", command=self._rescan_models)
         preferences_menu.add_command(label="Run Setup Wizard...", command=self._open_setup_wizard)
         preferences_menu.add_separator()
-        preferences_menu.add_command(label="Exit", command=self.destroy)
+        preferences_menu.add_command(label="Exit", command=self._on_close)
         menu_bar.add_cascade(label="Preferences", menu=preferences_menu)
         self.configure(menu=menu_bar)
 

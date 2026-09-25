@@ -82,6 +82,8 @@ class Settings:
     llm_model_roots: tuple[Path, ...] = ()
     gpu_backend: str = "auto"
     monitoring_interval: float = 2.0
+    window_width: int = 1180
+    window_height: int = 900
     setup_completed: bool = False
     setup_schema_version: int = 0
     prompt_workshop: PromptWorkshopConfig = field(default_factory=PromptWorkshopConfig)
@@ -126,6 +128,16 @@ def load_settings(path: Path) -> Settings:
     monitoring_interval = float(monitoring_raw.get("interval_seconds", 2.0))
     if monitoring_interval < 1.0:
         raise ConfigError("[monitoring]: interval_seconds must be at least 1.0")
+
+    ui_raw = data.get("ui", {})
+    if ui_raw is None:
+        ui_raw = {}
+    if not isinstance(ui_raw, dict):
+        raise ConfigError("[ui] must be a table")
+    window_width = int(ui_raw.get("window_width", 1180))
+    window_height = int(ui_raw.get("window_height", 900))
+    if window_width <= 0 or window_height <= 0:
+        raise ConfigError("[ui]: window dimensions must be positive")
 
     setup_raw = data.get("setup", {})
     if setup_raw is None:
@@ -222,6 +234,8 @@ def load_settings(path: Path) -> Settings:
         llm_model_roots=llm_model_roots,
         gpu_backend=gpu_backend,
         monitoring_interval=monitoring_interval,
+        window_width=window_width,
+        window_height=window_height,
         setup_completed=setup_completed,
         setup_schema_version=setup_schema_version,
         prompt_workshop=prompt_workshop,

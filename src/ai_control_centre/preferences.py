@@ -213,3 +213,13 @@ def save_appearance(config_dir: Path, values: Mapping) -> None:
     data = _load_toml(path)
     data.setdefault("appearance", {}).update(clean)
     write_toml_atomic(path, data)
+
+
+def save_window_size(config_dir: Path, width: int, height: int) -> None:
+    """Persist the main-window size without changing other user settings."""
+    path = config_dir / "settings.toml"
+    data = _load_toml(path)
+    ui = data.setdefault("ui", {})
+    ui["window_width"] = max(1, int(width))
+    ui["window_height"] = max(1, int(height))
+    write_toml_atomic(path, data)
