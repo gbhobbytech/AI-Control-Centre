@@ -4,6 +4,8 @@ A lightweight Linux control panel for running local AI services without manually
 
 **Current release: 1.0.8**
 
+![AI Control Centre main window](assets/screenshots/main-window.png)
+
 AI Control Centre is designed for local AI workstations where several tools may compete for CPU, RAM and GPU resources. It starts the services required for the selected task, checks readiness, monitors the system and keeps machine-specific configuration separate from the application.
 
 ## Key features
