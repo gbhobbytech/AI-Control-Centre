@@ -1,0 +1,40 @@
+# Starter service configuration.
+# Review these paths if llama.cpp is installed somewhere other than ~/ai/apps/llama.cpp.
+
+[services.llama]
+display_name = "llama.cpp"
+type = "process"
+executable = "~/ai/apps/llama.cpp/build/bin/llama-server"
+cwd = "~/ai/apps/llama.cpp"
+args = [
+  "-m", "{model.path}",
+  "-ngl", "{model.recommended_gpu_layers}",
+  "--ctx-size", "{model.recommended_context_length}",
+  "--n-predict", "{model.max_output_tokens}",
+  "--cache-type-k", "{model.cache_type_k}",
+  "--cache-type-v", "{model.cache_type_v}",
+  "--flash-attn", "{model.flash_attention}",
+  "--temp", "0.2",
+  "--host", "127.0.0.1",
+  "--port", "8080",
+]
+open_url = "http://127.0.0.1:8080"
+stop_timeout = 10
+log_max_bytes = 2000000
+gpu = true
+conflict_groups = ["large-gpu-workload"]
+
+[services.llama.model_defaults]
+max_output_tokens = 2048
+flash_attention = "auto"
+recommended_gpu_layers = 0
+recommended_context_length = 4096
+cache_type_k = "f16"
+cache_type_v = "f16"
+
+[services.llama.health]
+url = "http://127.0.0.1:8080/health"
+expected_status = 200
+retry_interval = 1.0
+startup_timeout = 120.0
+request_timeout = 2.0
