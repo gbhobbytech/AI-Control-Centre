@@ -21,7 +21,13 @@ def _seed(config_dir: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_seed_config_creates_loadable_fresh_configuration(tmp_path: Path) -> None:
+def test_seed_config_creates_loadable_fresh_configuration(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    monkeypatch.setenv("HOME", str(home_dir))
+
     config_dir = tmp_path / "config"
 
     result = _seed(config_dir)
