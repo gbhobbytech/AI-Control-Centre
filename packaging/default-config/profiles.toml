@@ -1,0 +1,19 @@
+# Starter task profiles.
+# The Setup Wizard replaces the placeholder task model selections.
+
+[profiles.coding]
+display_name = "Coding"
+services = ["llama"]
+open_service = "llama"
+default_model = "setup_placeholder"
+
+[profiles.chat]
+display_name = "Chat"
+services = ["llama"]
+open_service = "llama"
+default_model = "setup_placeholder"
+
+[profiles.agent]
+display_name = "Agent"
+services = ["llama"]
+default_model = "setup_placeholder"
