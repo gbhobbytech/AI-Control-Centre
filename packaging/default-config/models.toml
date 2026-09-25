@@ -1,10 +1,3 @@
-# Bootstrap placeholder.
-# It keeps the fresh configuration valid until the Setup Wizard discovers
-# and selects real local GGUF models. It is intentionally incomplete.
-
-[models.setup_placeholder]
-display_name = "Setup placeholder - choose a local GGUF model"
-path = "~/ai/models/llm/AI-Control-Centre-setup-placeholder.gguf"
-family = "Unconfigured"
-vision = false
-notes = "Bootstrap-only entry. Replace task defaults with discovered local models during Setup."
+# Fresh-install model configuration.
+# The Setup Wizard discovers local GGUF models from the configured model roots
+# and writes model metadata/tuning here as the user configures the system.
