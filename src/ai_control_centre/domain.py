@@ -97,12 +97,30 @@ class ProcessServiceConfig(CommonServiceConfig):
 
 
 @dataclass(frozen=True)
+class TerminalServiceConfig(ProcessServiceConfig):
+    """Interactive CLI service launched inside a desktop terminal."""
+
+    terminal_executable: str = "x-terminal-emulator"
+    terminal_args: tuple[str, ...] = ("-e",)
+    startup_grace: float = 0.75
+
+    @property
+    def command(self) -> Sequence[str]:
+        return (
+            self.terminal_executable,
+            *self.terminal_args,
+            str(self.executable),
+            *self.args,
+        )
+
+
+@dataclass(frozen=True)
 class DockerServiceConfig(CommonServiceConfig):
     container_name: str = ""
     docker_executable: str = "docker"
 
 
-ServiceConfig = ProcessServiceConfig | DockerServiceConfig
+ServiceConfig = ProcessServiceConfig | TerminalServiceConfig | DockerServiceConfig
 
 
 @dataclass(frozen=True)
