@@ -3,14 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run an interactive command and publish its process identity."
+        description="Publish terminal process identity, then exec an interactive command."
     )
     parser.add_argument("--state-file", required=True)
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -29,31 +27,17 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError:
         pass
 
-    child = subprocess.Popen(
-        command,
-        stdin=sys.stdin,
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-        start_new_session=True,
-        close_fds=True,
-    )
-
     payload = {
-        "pid": child.pid,
-        "pgid": os.getpgid(child.pid),
-        "sid": os.getsid(child.pid),
+        "pid": os.getpid(),
+        "pgid": os.getpgid(0),
+        "sid": os.getsid(0),
     }
     temp = state_file.with_suffix(state_file.suffix + ".tmp")
     temp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
     os.replace(temp, state_file)
 
-    try:
-        return int(child.wait())
-    finally:
-        try:
-            state_file.unlink()
-        except FileNotFoundError:
-            pass
+    os.execvpe(command[0], command, os.environ)
+    return 127
 
 
 if __name__ == "__main__":
