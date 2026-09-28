@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import tkinter as tk
-from tkinter import colorchooser, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, ttk
 
 from .config import AppConfig, load_app_config
 from .domain import HarnessConfig
@@ -81,6 +81,43 @@ def _model_label(model) -> str:
     size_text = f"{size / (1024 ** 3):.1f} GB" if size is not None else "size unknown"
     suffix = "" if model.complete else " - incomplete"
     return f"{model.display_name} [{model.id}] - {size_text}{suffix}"
+
+
+def _append_model_root(parent, text_widget: tk.Text) -> bool:
+    """Append a model-root directory chosen by the user, avoiding duplicates."""
+    existing = [
+        line.strip()
+        for line in text_widget.get("1.0", "end-1c").splitlines()
+        if line.strip()
+    ]
+    initial_dir = None
+    for value in existing:
+        candidate = Path(value).expanduser()
+        if candidate.is_dir():
+            initial_dir = str(candidate)
+            break
+
+    options = {
+        "parent": parent,
+        "title": "Choose LLM model root",
+        "mustexist": True,
+    }
+    if initial_dir is not None:
+        options["initialdir"] = initial_dir
+
+    selected = filedialog.askdirectory(**options)
+    if not selected:
+        return False
+
+    chosen = str(Path(selected).expanduser())
+    if chosen in existing:
+        return False
+
+    current = text_widget.get("1.0", "end-1c")
+    if current and not current.endswith("\n"):
+        text_widget.insert("end", "\n")
+    text_widget.insert("end", chosen)
+    return True
 
 
 class ModelMenu(ttk.Menubutton):
@@ -350,7 +387,8 @@ class SettingsWindow(tk.Toplevel):
         self.root_text.insert("1.0", self.root_var.get())
         row = ttk.Frame(parent)
         row.grid(row=3, column=0, sticky="ew", pady=8)
-        ttk.Button(row, text="Rescan Models", command=self._rescan).pack(side="left")
+        ttk.Button(row, text="Browse…", command=self._browse_model_root).pack(side="left")
+        ttk.Button(row, text="Rescan Models", command=self._rescan).pack(side="left", padx=(8, 0))
         ttk.Label(row, textvariable=self.scan_status).pack(side="left", padx=10)
         self.model_list = tk.Listbox(parent, height=16)
         self.model_list.grid(row=4, column=0, sticky="nsew", pady=(4, 0))
@@ -530,6 +568,9 @@ class SettingsWindow(tk.Toplevel):
         self.timeout_var.set("60")
         self.cache_k_var.set("q8_0")
         self.cache_v_var.set("q8_0")
+
+    def _browse_model_root(self) -> None:
+        _append_model_root(self, self.root_text)
 
     def _roots_from_text(self) -> tuple[Path, ...]:
         values = [line.strip() for line in self.root_text.get("1.0", "end-1c").splitlines() if line.strip()]
@@ -718,6 +759,7 @@ class SetupWizard(tk.Toplevel):
         self.mode_var = tk.StringVar(value=self.state_data.processing_mode)
         self.keep_var = tk.BooleanVar(value=self.state_data.keep_loaded)
         self.status_var = tk.StringVar(value="")
+        self.model_config_window: ModelTuningWindow | None = None
         self._build()
         self._show_page(0)
         style_classic(self)
@@ -767,7 +809,9 @@ class SetupWizard(tk.Toplevel):
         ).grid(row=1,column=0,sticky="w",pady=(4,6))
         self.root_text=tk.Text(p,height=5); self.root_text.grid(row=2,column=0,sticky="ew"); self.root_text.insert("1.0",self.root_var.get())
         self.model_list=tk.Listbox(p,height=12); self.model_list.grid(row=3,column=0,sticky="nsew",pady=8)
-        ttk.Button(p,text="Rescan Models",command=self._scan).grid(row=4,column=0,sticky="w")
+        controls=ttk.Frame(p); controls.grid(row=4,column=0,sticky="w")
+        ttk.Button(controls,text="Browse…",command=self._browse_model_root).pack(side="left")
+        ttk.Button(controls,text="Rescan Models",command=self._scan).pack(side="left",padx=(8,0))
         self._fill_model_list()
 
     def _page_tasks(self, p) -> None:
@@ -884,6 +928,9 @@ class SetupWizard(tk.Toplevel):
         if hasattr(self, "prompt_keep_check"):
             self.prompt_keep_check.configure(state=state)
 
+    def _browse_model_root(self) -> None:
+        _append_model_root(self, self.root_text)
+
     def _selected_task_models(self) -> list[str]:
         result: list[str] = []
         for task, menu in self.task_menus.items():
@@ -916,6 +963,16 @@ class SetupWizard(tk.Toplevel):
             self.config_model_list.selection_set(0)
 
     def _configure_selected_model(self) -> None:
+        if self.model_config_window is not None:
+            try:
+                if self.model_config_window.winfo_exists():
+                    self.model_config_window.lift()
+                    self.model_config_window.focus_force()
+                    return
+            except tk.TclError:
+                pass
+            self.model_config_window = None
+
         selected_ids = self._selected_task_models()
         if not selected_ids:
             messagebox.showinfo("Model configuration", "Choose task models first.", parent=self)
@@ -930,14 +987,19 @@ class SetupWizard(tk.Toplevel):
             return
         root = self._root()
         on_launch = getattr(root, "_launch_tuned_model", None)
-        ModelTuningWindow(
+        self.model_config_window = ModelTuningWindow(
             self, self.state_data.config_dir, fresh, self._refresh_model_configuration,
             on_launch, model_id, setup_mode=True,
             on_continue=self._model_configuration_continue,
-            on_back=lambda _model_id: self._refresh_model_configuration(),
+            on_back=self._model_configuration_back,
         )
 
+    def _model_configuration_back(self, _model_id) -> None:
+        self.model_config_window = None
+        self._refresh_model_configuration()
+
     def _model_configuration_continue(self, _model_id) -> None:
+        self.model_config_window = None
         self._refresh_model_configuration()
         # Put the next unconfigured model under the selection so Save & Continue
         # returns naturally to the setup flow without requiring the window X.
