@@ -318,6 +318,7 @@ class SettingsWindow(tk.Toplevel):
         self.model_vars: dict[str, tk.StringVar] = {}
         self.model_menus: dict[str, ModelMenu] = {}
         self.model_warning_labels: dict[str, ttk.Label] = {}
+        self.tuning_return_tab = None
         self.harness_var = tk.StringVar()
         self.harness_menu: HarnessMenu | None = None
         self.prompt_model_var = tk.StringVar()
@@ -356,6 +357,8 @@ class SettingsWindow(tk.Toplevel):
         tasks = ttk.Frame(self.notebook, padding=12)
         harnesses = ttk.Frame(self.notebook, padding=12)
         prompt = ttk.Frame(self.notebook, padding=12)
+        self.models_tab = models
+        self.tasks_tab = tasks
         self.notebook.add(models, text="Models")
         self.notebook.add(tasks, text="Task Defaults")
         self.notebook.add(harnesses, text="Agent Harnesses")
@@ -376,8 +379,12 @@ class SettingsWindow(tk.Toplevel):
         buttons = ttk.Frame(outer)
         buttons.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         buttons.columnconfigure(0, weight=1)
-        ttk.Button(buttons, text="Close", command=self._cancel).grid(row=0, column=1, padx=4)
-        ttk.Button(buttons, text="Save settings", style="Primary.TButton", command=self._save).grid(row=0, column=2, padx=(4, 0))
+        self.close_button = ttk.Button(buttons, text="Close", command=self._footer_close)
+        self.close_button.grid(row=0, column=1, padx=4)
+        self.save_button = ttk.Button(buttons, text="Save settings", style="Primary.TButton", command=self._footer_save)
+        self.save_button.grid(row=0, column=2, padx=(4, 0))
+        self.notebook.bind("<<NotebookTabChanged>>", self._update_footer_actions, add="+")
+        self.after_idle(self._update_footer_actions)
 
     def _build_models(self, parent) -> None:
         parent.columnconfigure(0, weight=1)
@@ -646,6 +653,7 @@ class SettingsWindow(tk.Toplevel):
                 parent=self,
             )
             return
+        self.tuning_return_tab = self.models_tab
         self.notebook.select(self.tuning_scroll)
         self.tuning.select_model(model_id)
 
@@ -680,6 +688,7 @@ class SettingsWindow(tk.Toplevel):
             parent=self,
         ):
             return
+        self.tuning_return_tab = self.tasks_tab
         self.notebook.select(self.tuning_scroll)
         self.tuning.select_model(model_id)
 
@@ -749,6 +758,55 @@ class SettingsWindow(tk.Toplevel):
             raise ValueError("Port must be between 1 and 65535")
         if self.state_data.startup_timeout <= 0:
             raise ValueError("Startup timeout must be positive")
+
+    def _tuning_tab_active(self) -> bool:
+        try:
+            return self.notebook.select() == str(self.tuning_scroll)
+        except tk.TclError:
+            return False
+
+    def _update_footer_actions(self, _event=None) -> None:
+        if not hasattr(self, "save_button"):
+            return
+        if self._tuning_tab_active():
+            self.save_button.configure(text="Save model tuning", command=self._footer_save)
+            if self.tuning_return_tab is self.tasks_tab:
+                self.close_button.configure(text="Back to Task Defaults", command=self._footer_close)
+            elif self.tuning_return_tab is self.models_tab:
+                self.close_button.configure(text="Back to Models", command=self._footer_close)
+            else:
+                self.close_button.configure(text="Close", command=self._footer_close)
+        else:
+            self.save_button.configure(text="Save settings", command=self._footer_save)
+            self.close_button.configure(text="Close", command=self._footer_close)
+
+    def _footer_save(self) -> None:
+        if not self._tuning_tab_active():
+            self._save()
+            return
+        if not self.tuning.save(launch=False):
+            return
+        destination = self.tuning_return_tab
+        self.tuning_return_tab = None
+        if destination is not None:
+            self.notebook.select(destination)
+        self._update_footer_actions()
+
+    def _footer_close(self) -> None:
+        if self._tuning_tab_active() and self.tuning_return_tab is not None:
+            if self.tuning.dirty and not messagebox.askyesno(
+                "Unsaved model settings",
+                "Return without saving these model settings?",
+                parent=self,
+            ):
+                return
+            destination = self.tuning_return_tab
+            self.tuning_return_tab = None
+            self.tuning.dirty = False
+            self.notebook.select(destination)
+            self._update_footer_actions()
+            return
+        self._cancel()
 
     def _save(self) -> None:
         if getattr(self._root(), 'operation_busy', False) or getattr(self._root(), 'prompt_busy', False):
