@@ -329,6 +329,9 @@ class ModelTuningWindow(tk.Toplevel):
         self.panel.pack(fill='both', expand=True)
 
         if setup_mode:
+            # Setup configures exactly one model at a time. Model switching belongs
+            # to the wizard list so unsaved state from two models cannot overlap.
+            self.panel.picker.configure(state='disabled')
             actions = ttk.Frame(outer)
             actions.grid(row=1, column=0, sticky='ew', pady=(10, 0))
             actions.columnconfigure(1, weight=1)
