@@ -160,6 +160,13 @@ class ServiceManager:
             effective_gpu = layers > 0
 
         effective = replace(config, args=rendered_args, gpu=effective_gpu, health=health)
+        if isinstance(effective, TerminalServiceConfig):
+            return TerminalService(
+                effective,
+                self.runtime_store,
+                model_id=model_id,
+                launch_mode=launch_mode,
+            )
         return ProcessService(
             effective,
             self.runtime_store,
