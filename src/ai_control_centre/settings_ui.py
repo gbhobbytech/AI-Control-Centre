@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import tkinter as tk
-from tkinter import colorchooser, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, ttk
 
 from .config import AppConfig, load_app_config
 from .domain import HarnessConfig
@@ -11,7 +11,7 @@ from .models import model_total_size_bytes
 from .preferences import detect_setup_environment, rescan_models, save_preferences, save_appearance
 from .theme import DEFAULT_APPEARANCE, style_classic, validate_appearance
 from .tuning_ui import ModelTuningPanel, ModelTuningWindow
-from .ui_utils import ScrollableFrame, fit_window_to_screen
+from .ui_utils import HoverTip, ScrollableFrame, fit_window_to_screen
 
 _TASKS = ("coding", "chat", "agent")
 _CACHE_CHOICES = ("q8_0", "q4_0", "f16")
@@ -81,6 +81,43 @@ def _model_label(model) -> str:
     size_text = f"{size / (1024 ** 3):.1f} GB" if size is not None else "size unknown"
     suffix = "" if model.complete else " - incomplete"
     return f"{model.display_name} [{model.id}] - {size_text}{suffix}"
+
+
+def _append_model_root(parent, text_widget: tk.Text) -> bool:
+    """Append a model-root directory chosen by the user, avoiding duplicates."""
+    existing = [
+        line.strip()
+        for line in text_widget.get("1.0", "end-1c").splitlines()
+        if line.strip()
+    ]
+    initial_dir = None
+    for value in existing:
+        candidate = Path(value).expanduser()
+        if candidate.is_dir():
+            initial_dir = str(candidate)
+            break
+
+    options = {
+        "parent": parent,
+        "title": "Choose LLM model root",
+        "mustexist": True,
+    }
+    if initial_dir is not None:
+        options["initialdir"] = initial_dir
+
+    selected = filedialog.askdirectory(**options)
+    if not selected:
+        return False
+
+    chosen = str(Path(selected).expanduser())
+    if chosen in existing:
+        return False
+
+    current = text_widget.get("1.0", "end-1c")
+    if current and not current.endswith("\n"):
+        text_widget.insert("end", "\n")
+    text_widget.insert("end", chosen)
+    return True
 
 
 class ModelMenu(ttk.Menubutton):
@@ -280,6 +317,8 @@ class SettingsWindow(tk.Toplevel):
         self.on_saved = on_saved
         self.model_vars: dict[str, tk.StringVar] = {}
         self.model_menus: dict[str, ModelMenu] = {}
+        self.model_warning_labels: dict[str, ttk.Label] = {}
+        self.tuning_return_tab = None
         self.harness_var = tk.StringVar()
         self.harness_menu: HarnessMenu | None = None
         self.prompt_model_var = tk.StringVar()
@@ -318,13 +357,15 @@ class SettingsWindow(tk.Toplevel):
         tasks = ttk.Frame(self.notebook, padding=12)
         harnesses = ttk.Frame(self.notebook, padding=12)
         prompt = ttk.Frame(self.notebook, padding=12)
+        self.models_tab = models
+        self.tasks_tab = tasks
         self.notebook.add(models, text="Models")
         self.notebook.add(tasks, text="Task Defaults")
         self.notebook.add(harnesses, text="Agent Harnesses")
         self.notebook.add(prompt, text="Prompt Helper")
         self.tuning_scroll = ScrollableFrame(self.notebook)
         self.tuning = ModelTuningPanel(self.tuning_scroll.body, self.config_dir, self.state_data.config,
-                                      self.on_saved, self._launch_tuned)
+                                      self._model_tuning_saved, self._launch_tuned)
         self.tuning.pack(fill='both', expand=True)
         self.notebook.add(self.tuning_scroll, text='Model tuning')
         appearance = ttk.Frame(self.notebook, padding=16)
@@ -338,8 +379,12 @@ class SettingsWindow(tk.Toplevel):
         buttons = ttk.Frame(outer)
         buttons.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         buttons.columnconfigure(0, weight=1)
-        ttk.Button(buttons, text="Close", command=self._cancel).grid(row=0, column=1, padx=4)
-        ttk.Button(buttons, text="Save settings", style="Primary.TButton", command=self._save).grid(row=0, column=2, padx=(4, 0))
+        self.close_button = ttk.Button(buttons, text="Close", command=self._footer_close)
+        self.close_button.grid(row=0, column=1, padx=4)
+        self.save_button = ttk.Button(buttons, text="Save settings", style="Primary.TButton", command=self._footer_save)
+        self.save_button.grid(row=0, column=2, padx=(4, 0))
+        self.notebook.bind("<<NotebookTabChanged>>", self._update_footer_actions, add="+")
+        self.after_idle(self._update_footer_actions)
 
     def _build_models(self, parent) -> None:
         parent.columnconfigure(0, weight=1)
@@ -350,30 +395,51 @@ class SettingsWindow(tk.Toplevel):
         self.root_text.insert("1.0", self.root_var.get())
         row = ttk.Frame(parent)
         row.grid(row=3, column=0, sticky="ew", pady=8)
-        ttk.Button(row, text="Rescan Models", command=self._rescan).pack(side="left")
+        ttk.Button(row, text="Browse…", command=self._browse_model_root).pack(side="left")
+        ttk.Button(row, text="Rescan Models", command=self._rescan).pack(side="left", padx=(8, 0))
         ttk.Label(row, textvariable=self.scan_status).pack(side="left", padx=10)
-        self.model_list = tk.Listbox(parent, height=16)
+        self.model_list = tk.Listbox(parent, height=16, exportselection=False)
         self.model_list.grid(row=4, column=0, sticky="nsew", pady=(4, 0))
+        model_actions = ttk.Frame(parent)
+        model_actions.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(
+            model_actions,
+            text="Tune selected model…",
+            style="Primary.TButton",
+            command=self._tune_selected_model,
+        ).pack(side="left")
+        ttk.Label(
+            model_actions,
+            text="Models marked TUNING REQUIRED must be reviewed before they can be used as task defaults.",
+            style="Muted.TLabel",
+        ).pack(side="left", padx=(10, 0))
         parent.rowconfigure(4, weight=1)
         self._refresh_model_list()
 
     def _build_tasks(self, parent) -> None:
-        parent.columnconfigure(1, weight=1)
-        ttk.Label(parent, text="Default model for each task", font=("TkDefaultFont", 11, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        parent.columnconfigure(2, weight=1)
+        ttk.Label(parent, text="Default model for each task", font=("TkDefaultFont", 11, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 12))
         labels = {"coding": "Coding", "chat": "Chat", "agent": "Agent"}
         for row, task in enumerate(_TASKS, start=1):
             ttk.Label(parent, text=labels[task]).grid(row=row, column=0, sticky="w", pady=6, padx=(0, 12))
+            warning = ttk.Label(parent, text="!", style="Accent.TLabel", cursor="hand2")
+            warning.grid(row=row, column=1, sticky="e", padx=(0, 8))
+            warning.bind("<Button-1>", lambda _event, task_id=task: self._offer_tune_task_model(task_id))
+            HoverTip(warning, "Selected model is not tuned. Click to tune now.")
+            self.model_warning_labels[task] = warning
             variable = tk.StringVar()
+            variable.trace_add("write", lambda *_args, task_id=task: self._update_task_tuning_warning(task_id))
             menu = ModelMenu(parent, variable)
-            menu.grid(row=row, column=1, sticky="ew", pady=6)
+            menu.grid(row=row, column=2, sticky="ew", pady=6)
             self.model_vars[task] = variable
             self.model_menus[task] = menu
-        ttk.Separator(parent).grid(row=4, column=0, columnspan=2, sticky="ew", pady=12)
+            warning.grid_remove()
+        ttk.Separator(parent).grid(row=4, column=0, columnspan=3, sticky="ew", pady=12)
         ttk.Label(parent, text="Agent harness").grid(row=5, column=0, sticky="w", pady=6, padx=(0, 12))
         self.harness_menu = HarnessMenu(parent, self.harness_var)
-        self.harness_menu.grid(row=5, column=1, sticky="ew", pady=6)
+        self.harness_menu.grid(row=5, column=1, columnspan=2, sticky="ew", pady=6)
         self.harness_menu.set_harnesses(self.state_data.harnesses, self.state_data.agent_harness, allow_none=True)
-        ttk.Label(parent, text="The harness supplies the agent runtime/interface; the Agent task still uses the selected LLM.", style="Muted.TLabel", wraplength=620).grid(row=6, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ttk.Label(parent, text="The harness supplies the agent runtime/interface; the Agent task still uses the selected LLM.", style="Muted.TLabel", wraplength=620).grid(row=6, column=0, columnspan=3, sticky="w", pady=(2, 0))
         self._refresh_model_menus()
 
     def _build_harnesses(self, parent) -> None:
@@ -531,6 +597,9 @@ class SettingsWindow(tk.Toplevel):
         self.cache_k_var.set("q8_0")
         self.cache_v_var.set("q8_0")
 
+    def _browse_model_root(self) -> None:
+        _append_model_root(self, self.root_text)
+
     def _roots_from_text(self) -> tuple[Path, ...]:
         values = [line.strip() for line in self.root_text.get("1.0", "end-1c").splitlines() if line.strip()]
         if not values:
@@ -554,13 +623,86 @@ class SettingsWindow(tk.Toplevel):
 
     def _refresh_model_list(self) -> None:
         self.model_list.delete(0, "end")
-        for model in self.state_data.models.values():
-            self.model_list.insert("end", _model_label(model))
+        self._model_list_ids: list[str] = []
+        for model_id, model in self.state_data.models.items():
+            if not model.complete:
+                status = "MISSING" if not model.discovered else "INCOMPLETE"
+            elif model.tuning_reviewed:
+                status = "TUNED"
+            else:
+                status = "TUNING REQUIRED"
+            self.model_list.insert("end", f"[{status}] {_model_label(model)}")
+            self._model_list_ids.append(model_id)
+        if self.model_list.size():
+            self.model_list.selection_set(0)
+
+    def _tune_selected_model(self) -> None:
+        selection = self.model_list.curselection()
+        if not selection:
+            messagebox.showinfo("Model tuning", "Select a model first.", parent=self)
+            return
+        index = selection[0]
+        if index >= len(self._model_list_ids):
+            return
+        model_id = self._model_list_ids[index]
+        model = self.state_data.models.get(model_id)
+        if model is None or not model.complete:
+            messagebox.showinfo(
+                "Model tuning",
+                "Only complete local GGUF models can be tuned. Check the model path or finish copying/downloading the model, then rescan.",
+                parent=self,
+            )
+            return
+        self.tuning_return_tab = self.models_tab
+        self.notebook.select(self.tuning_scroll)
+        self.tuning.select_model(model_id)
 
     def _refresh_model_menus(self) -> None:
         for task, menu in self.model_menus.items():
             selected = menu.selected_id() or self.state_data.task_models.get(task)
             menu.set_models(self.state_data.models, selected, allow_none=(task == "agent"))
+            self._update_task_tuning_warning(task)
+
+    def _update_task_tuning_warning(self, task: str) -> None:
+        warning = self.model_warning_labels.get(task)
+        menu = self.model_menus.get(task)
+        if warning is None or menu is None:
+            return
+        model_id = menu.selected_id()
+        model = self.state_data.models.get(model_id) if model_id else None
+        if model is not None and model.complete and not model.tuning_reviewed:
+            warning.grid()
+        else:
+            warning.grid_remove()
+
+    def _offer_tune_task_model(self, task: str) -> None:
+        menu = self.model_menus.get(task)
+        model_id = menu.selected_id() if menu is not None else None
+        model = self.state_data.models.get(model_id) if model_id else None
+        if model is None or not model.complete or model.tuning_reviewed:
+            self._update_task_tuning_warning(task)
+            return
+        if not messagebox.askyesno(
+            "Model tuning",
+            f"{model.display_name} is not tuned for this computer.\n\nTune it now?",
+            parent=self,
+        ):
+            return
+        self.tuning_return_tab = self.tasks_tab
+        self.notebook.select(self.tuning_scroll)
+        self.tuning.select_model(model_id)
+
+    def _model_tuning_saved(self) -> None:
+        try:
+            fresh = load_app_config(self.config_dir)
+            self.state_data.config = fresh
+            self.state_data.models = dict(fresh.models)
+        except Exception:
+            pass
+        self._refresh_model_list()
+        self._refresh_model_menus()
+        self._refresh_prompt_menu()
+        self.on_saved()
 
     def _refresh_prompt_menu(self) -> None:
         selected = self.prompt_model_menu.selected_id() if hasattr(self, "prompt_model_menu") else None
@@ -616,6 +758,55 @@ class SettingsWindow(tk.Toplevel):
             raise ValueError("Port must be between 1 and 65535")
         if self.state_data.startup_timeout <= 0:
             raise ValueError("Startup timeout must be positive")
+
+    def _tuning_tab_active(self) -> bool:
+        try:
+            return self.notebook.select() == str(self.tuning_scroll)
+        except tk.TclError:
+            return False
+
+    def _update_footer_actions(self, _event=None) -> None:
+        if not hasattr(self, "save_button"):
+            return
+        if self._tuning_tab_active():
+            self.save_button.configure(text="Save model tuning", command=self._footer_save)
+            if self.tuning_return_tab is self.tasks_tab:
+                self.close_button.configure(text="Back to Task Defaults", command=self._footer_close)
+            elif self.tuning_return_tab is self.models_tab:
+                self.close_button.configure(text="Back to Models", command=self._footer_close)
+            else:
+                self.close_button.configure(text="Close", command=self._footer_close)
+        else:
+            self.save_button.configure(text="Save settings", command=self._footer_save)
+            self.close_button.configure(text="Close", command=self._footer_close)
+
+    def _footer_save(self) -> None:
+        if not self._tuning_tab_active():
+            self._save()
+            return
+        if not self.tuning.save(launch=False):
+            return
+        destination = self.tuning_return_tab
+        self.tuning_return_tab = None
+        if destination is not None:
+            self.notebook.select(destination)
+        self._update_footer_actions()
+
+    def _footer_close(self) -> None:
+        if self._tuning_tab_active() and self.tuning_return_tab is not None:
+            if self.tuning.dirty and not messagebox.askyesno(
+                "Unsaved model settings",
+                "Return without saving these model settings?",
+                parent=self,
+            ):
+                return
+            destination = self.tuning_return_tab
+            self.tuning_return_tab = None
+            self.tuning.dirty = False
+            self.notebook.select(destination)
+            self._update_footer_actions()
+            return
+        self._cancel()
 
     def _save(self) -> None:
         if getattr(self._root(), 'operation_busy', False) or getattr(self._root(), 'prompt_busy', False):
@@ -718,6 +909,7 @@ class SetupWizard(tk.Toplevel):
         self.mode_var = tk.StringVar(value=self.state_data.processing_mode)
         self.keep_var = tk.BooleanVar(value=self.state_data.keep_loaded)
         self.status_var = tk.StringVar(value="")
+        self.model_config_window: ModelTuningWindow | None = None
         self._build()
         self._show_page(0)
         style_classic(self)
@@ -767,7 +959,9 @@ class SetupWizard(tk.Toplevel):
         ).grid(row=1,column=0,sticky="w",pady=(4,6))
         self.root_text=tk.Text(p,height=5); self.root_text.grid(row=2,column=0,sticky="ew"); self.root_text.insert("1.0",self.root_var.get())
         self.model_list=tk.Listbox(p,height=12); self.model_list.grid(row=3,column=0,sticky="nsew",pady=8)
-        ttk.Button(p,text="Rescan Models",command=self._scan).grid(row=4,column=0,sticky="w")
+        controls=ttk.Frame(p); controls.grid(row=4,column=0,sticky="w")
+        ttk.Button(controls,text="Browse…",command=self._browse_model_root).pack(side="left")
+        ttk.Button(controls,text="Rescan Models",command=self._scan).pack(side="left",padx=(8,0))
         self._fill_model_list()
 
     def _page_tasks(self, p) -> None:
@@ -884,6 +1078,9 @@ class SetupWizard(tk.Toplevel):
         if hasattr(self, "prompt_keep_check"):
             self.prompt_keep_check.configure(state=state)
 
+    def _browse_model_root(self) -> None:
+        _append_model_root(self, self.root_text)
+
     def _selected_task_models(self) -> list[str]:
         result: list[str] = []
         for task, menu in self.task_menus.items():
@@ -916,6 +1113,16 @@ class SetupWizard(tk.Toplevel):
             self.config_model_list.selection_set(0)
 
     def _configure_selected_model(self) -> None:
+        if self.model_config_window is not None:
+            try:
+                if self.model_config_window.winfo_exists():
+                    self.model_config_window.lift()
+                    self.model_config_window.focus_force()
+                    return
+            except tk.TclError:
+                pass
+            self.model_config_window = None
+
         selected_ids = self._selected_task_models()
         if not selected_ids:
             messagebox.showinfo("Model configuration", "Choose task models first.", parent=self)
@@ -930,14 +1137,19 @@ class SetupWizard(tk.Toplevel):
             return
         root = self._root()
         on_launch = getattr(root, "_launch_tuned_model", None)
-        ModelTuningWindow(
+        self.model_config_window = ModelTuningWindow(
             self, self.state_data.config_dir, fresh, self._refresh_model_configuration,
             on_launch, model_id, setup_mode=True,
             on_continue=self._model_configuration_continue,
-            on_back=lambda _model_id: self._refresh_model_configuration(),
+            on_back=self._model_configuration_back,
         )
 
+    def _model_configuration_back(self, _model_id) -> None:
+        self.model_config_window = None
+        self._refresh_model_configuration()
+
     def _model_configuration_continue(self, _model_id) -> None:
+        self.model_config_window = None
         self._refresh_model_configuration()
         # Put the next unconfigured model under the selection so Save & Continue
         # returns naturally to the setup flow without requiring the window X.

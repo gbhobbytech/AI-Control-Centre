@@ -82,3 +82,50 @@ class ScrollableFrame(ttk.Frame):
 
     def _on_mousewheel_linux(self, event):
         self.canvas.yview_scroll(-1 if event.num == 4 else 1, "units")
+
+
+class HoverTip:
+    """Small delayed tooltip for compact icon controls."""
+
+    def __init__(self, widget: tk.Misc, text: str, *, delay_ms: int = 350):
+        self.widget = widget
+        self.text = text
+        self.delay_ms = delay_ms
+        self._after_id = None
+        self._tip = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _event=None):
+        self._cancel()
+        self._after_id = self.widget.after(self.delay_ms, self._show)
+
+    def _cancel(self):
+        if self._after_id is not None:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except tk.TclError:
+                pass
+            self._after_id = None
+
+    def _show(self):
+        self._after_id = None
+        if self._tip is not None or not self.widget.winfo_exists():
+            return
+        x = self.widget.winfo_rootx() + self.widget.winfo_width() + 8
+        y = self.widget.winfo_rooty() + 2
+        tip = tk.Toplevel(self.widget)
+        tip.wm_overrideredirect(True)
+        tip.wm_geometry(f"+{x}+{y}")
+        ttk.Label(tip, text=self.text, padding=(8, 5), style="Tooltip.TLabel").pack()
+        self._tip = tip
+
+    def _hide(self, _event=None):
+        self._cancel()
+        if self._tip is not None:
+            try:
+                self._tip.destroy()
+            except tk.TclError:
+                pass
+            self._tip = None
