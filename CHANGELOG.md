@@ -4,6 +4,17 @@ Notable changes to AI Control Centre are recorded here.
 
 This file is intentionally concise. Detailed implementation history remains available in the Git commit log.
 
+## Unreleased
+
+- Added a reusable `terminal` service type for interactive CLI applications.
+- Added real TTY support for Agent harnesses such as Aider.
+- Terminal services now track the interactive child process rather than the desktop terminal launcher.
+- Added truthful Ready/Stopped lifecycle reporting for interactive services.
+- Added Stop All support for launcher-owned terminal services.
+- Added Aider recognition to Agent harness scanning.
+- Confirmed local Aider operation through the llama.cpp OpenAI-compatible API using `openai/local-model`.
+- Added automated terminal-service parsing and lifecycle tests.
+
 ## 1.0.8
 
 - Removed the installer's unnecessary pip upgrade and package-install steps.
