@@ -390,8 +390,21 @@ class SettingsWindow(tk.Toplevel):
         ttk.Button(row, text="Browse…", command=self._browse_model_root).pack(side="left")
         ttk.Button(row, text="Rescan Models", command=self._rescan).pack(side="left", padx=(8, 0))
         ttk.Label(row, textvariable=self.scan_status).pack(side="left", padx=10)
-        self.model_list = tk.Listbox(parent, height=16)
+        self.model_list = tk.Listbox(parent, height=16, exportselection=False)
         self.model_list.grid(row=4, column=0, sticky="nsew", pady=(4, 0))
+        model_actions = ttk.Frame(parent)
+        model_actions.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(
+            model_actions,
+            text="Tune selected model…",
+            style="Primary.TButton",
+            command=self._tune_selected_model,
+        ).pack(side="left")
+        ttk.Label(
+            model_actions,
+            text="Models marked TUNING REQUIRED must be reviewed before they can be used as task defaults.",
+            style="Muted.TLabel",
+        ).pack(side="left", padx=(10, 0))
         parent.rowconfigure(4, weight=1)
         self._refresh_model_list()
 
@@ -595,8 +608,38 @@ class SettingsWindow(tk.Toplevel):
 
     def _refresh_model_list(self) -> None:
         self.model_list.delete(0, "end")
-        for model in self.state_data.models.values():
-            self.model_list.insert("end", _model_label(model))
+        self._model_list_ids: list[str] = []
+        for model_id, model in self.state_data.models.items():
+            if not model.complete:
+                status = "MISSING" if not model.discovered else "INCOMPLETE"
+            elif model.tuning_reviewed:
+                status = "TUNED"
+            else:
+                status = "TUNING REQUIRED"
+            self.model_list.insert("end", f"[{status}] {_model_label(model)}")
+            self._model_list_ids.append(model_id)
+        if self.model_list.size():
+            self.model_list.selection_set(0)
+
+    def _tune_selected_model(self) -> None:
+        selection = self.model_list.curselection()
+        if not selection:
+            messagebox.showinfo("Model tuning", "Select a model first.", parent=self)
+            return
+        index = selection[0]
+        if index >= len(self._model_list_ids):
+            return
+        model_id = self._model_list_ids[index]
+        model = self.state_data.models.get(model_id)
+        if model is None or not model.complete:
+            messagebox.showinfo(
+                "Model tuning",
+                "Only complete local GGUF models can be tuned. Check the model path or finish copying/downloading the model, then rescan.",
+                parent=self,
+            )
+            return
+        self.notebook.select(self.tuning_scroll)
+        self.tuning.select_model(model_id)
 
     def _refresh_model_menus(self) -> None:
         for task, menu in self.model_menus.items():
