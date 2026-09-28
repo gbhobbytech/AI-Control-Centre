@@ -14,6 +14,7 @@ from .runtime import (
     ProcessRecord,
     RuntimeStore,
     command_hash,
+    proc_cmdline,
     proc_executable,
     proc_start_ticks,
     record_matches_process,
@@ -146,6 +147,24 @@ class TerminalService:
             raise RuntimeError(f"{self.config.display_name} failed to start: {detail}")
 
         pid, pgid, sid = identity
+
+        exec_deadline = time.monotonic() + 2.0
+        actual_command: list[str] | None = None
+        while time.monotonic() < exec_deadline:
+            try:
+                candidate = proc_cmdline(pid)
+            except (FileNotFoundError, ProcessLookupError, OSError):
+                candidate = []
+            if candidate and "ai_control_centre.terminal_runner" not in " ".join(candidate):
+                actual_command = candidate
+                break
+            time.sleep(0.02)
+
+        if actual_command is None:
+            raise RuntimeError(
+                f"{self.config.display_name} did not enter its interactive process"
+            )
+
         try:
             record = ProcessRecord(
                 service_id=self.config.id,
@@ -154,7 +173,7 @@ class TerminalService:
                 sid=sid,
                 proc_start_ticks=proc_start_ticks(pid),
                 executable=proc_executable(pid),
-                command_sha256=command_hash(target_command),
+                command_sha256=command_hash(actual_command),
                 model_id=self.model_id,
                 launch_mode=self.launch_mode,
             )
