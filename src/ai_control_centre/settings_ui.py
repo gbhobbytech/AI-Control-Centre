@@ -11,7 +11,7 @@ from .models import model_total_size_bytes
 from .preferences import detect_setup_environment, rescan_models, save_preferences, save_appearance
 from .theme import DEFAULT_APPEARANCE, style_classic, validate_appearance
 from .tuning_ui import ModelTuningPanel, ModelTuningWindow
-from .ui_utils import ScrollableFrame, fit_window_to_screen
+from .ui_utils import HoverTip, ScrollableFrame, fit_window_to_screen
 
 _TASKS = ("coding", "chat", "agent")
 _CACHE_CHOICES = ("q8_0", "q4_0", "f16")
@@ -317,6 +317,7 @@ class SettingsWindow(tk.Toplevel):
         self.on_saved = on_saved
         self.model_vars: dict[str, tk.StringVar] = {}
         self.model_menus: dict[str, ModelMenu] = {}
+        self.model_warning_labels: dict[str, ttk.Label] = {}
         self.harness_var = tk.StringVar()
         self.harness_menu: HarnessMenu | None = None
         self.prompt_model_var = tk.StringVar()
@@ -361,7 +362,7 @@ class SettingsWindow(tk.Toplevel):
         self.notebook.add(prompt, text="Prompt Helper")
         self.tuning_scroll = ScrollableFrame(self.notebook)
         self.tuning = ModelTuningPanel(self.tuning_scroll.body, self.config_dir, self.state_data.config,
-                                      self.on_saved, self._launch_tuned)
+                                      self._model_tuning_saved, self._launch_tuned)
         self.tuning.pack(fill='both', expand=True)
         self.notebook.add(self.tuning_scroll, text='Model tuning')
         appearance = ttk.Frame(self.notebook, padding=16)
@@ -409,22 +410,29 @@ class SettingsWindow(tk.Toplevel):
         self._refresh_model_list()
 
     def _build_tasks(self, parent) -> None:
-        parent.columnconfigure(1, weight=1)
-        ttk.Label(parent, text="Default model for each task", font=("TkDefaultFont", 11, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        parent.columnconfigure(2, weight=1)
+        ttk.Label(parent, text="Default model for each task", font=("TkDefaultFont", 11, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 12))
         labels = {"coding": "Coding", "chat": "Chat", "agent": "Agent"}
         for row, task in enumerate(_TASKS, start=1):
             ttk.Label(parent, text=labels[task]).grid(row=row, column=0, sticky="w", pady=6, padx=(0, 12))
+            warning = ttk.Label(parent, text="!", style="Accent.TLabel", cursor="hand2")
+            warning.grid(row=row, column=1, sticky="e", padx=(0, 8))
+            warning.bind("<Button-1>", lambda _event, task_id=task: self._offer_tune_task_model(task_id))
+            HoverTip(warning, "Selected model is not tuned. Click to tune now.")
+            self.model_warning_labels[task] = warning
             variable = tk.StringVar()
+            variable.trace_add("write", lambda *_args, task_id=task: self._update_task_tuning_warning(task_id))
             menu = ModelMenu(parent, variable)
-            menu.grid(row=row, column=1, sticky="ew", pady=6)
+            menu.grid(row=row, column=2, sticky="ew", pady=6)
             self.model_vars[task] = variable
             self.model_menus[task] = menu
-        ttk.Separator(parent).grid(row=4, column=0, columnspan=2, sticky="ew", pady=12)
+            warning.grid_remove()
+        ttk.Separator(parent).grid(row=4, column=0, columnspan=3, sticky="ew", pady=12)
         ttk.Label(parent, text="Agent harness").grid(row=5, column=0, sticky="w", pady=6, padx=(0, 12))
         self.harness_menu = HarnessMenu(parent, self.harness_var)
-        self.harness_menu.grid(row=5, column=1, sticky="ew", pady=6)
+        self.harness_menu.grid(row=5, column=1, columnspan=2, sticky="ew", pady=6)
         self.harness_menu.set_harnesses(self.state_data.harnesses, self.state_data.agent_harness, allow_none=True)
-        ttk.Label(parent, text="The harness supplies the agent runtime/interface; the Agent task still uses the selected LLM.", style="Muted.TLabel", wraplength=620).grid(row=6, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ttk.Label(parent, text="The harness supplies the agent runtime/interface; the Agent task still uses the selected LLM.", style="Muted.TLabel", wraplength=620).grid(row=6, column=0, columnspan=3, sticky="w", pady=(2, 0))
         self._refresh_model_menus()
 
     def _build_harnesses(self, parent) -> None:
@@ -645,6 +653,47 @@ class SettingsWindow(tk.Toplevel):
         for task, menu in self.model_menus.items():
             selected = menu.selected_id() or self.state_data.task_models.get(task)
             menu.set_models(self.state_data.models, selected, allow_none=(task == "agent"))
+            self._update_task_tuning_warning(task)
+
+    def _update_task_tuning_warning(self, task: str) -> None:
+        warning = self.model_warning_labels.get(task)
+        menu = self.model_menus.get(task)
+        if warning is None or menu is None:
+            return
+        model_id = menu.selected_id()
+        model = self.state_data.models.get(model_id) if model_id else None
+        if model is not None and model.complete and not model.tuning_reviewed:
+            warning.grid()
+        else:
+            warning.grid_remove()
+
+    def _offer_tune_task_model(self, task: str) -> None:
+        menu = self.model_menus.get(task)
+        model_id = menu.selected_id() if menu is not None else None
+        model = self.state_data.models.get(model_id) if model_id else None
+        if model is None or not model.complete or model.tuning_reviewed:
+            self._update_task_tuning_warning(task)
+            return
+        if not messagebox.askyesno(
+            "Model tuning",
+            f"{model.display_name} is not tuned for this computer.\n\nTune it now?",
+            parent=self,
+        ):
+            return
+        self.notebook.select(self.tuning_scroll)
+        self.tuning.select_model(model_id)
+
+    def _model_tuning_saved(self) -> None:
+        try:
+            fresh = load_app_config(self.config_dir)
+            self.state_data.config = fresh
+            self.state_data.models = dict(fresh.models)
+        except Exception:
+            pass
+        self._refresh_model_list()
+        self._refresh_model_menus()
+        self._refresh_prompt_menu()
+        self.on_saved()
 
     def _refresh_prompt_menu(self) -> None:
         selected = self.prompt_model_menu.selected_id() if hasattr(self, "prompt_model_menu") else None
