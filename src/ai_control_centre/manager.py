@@ -5,9 +5,10 @@ from dataclasses import replace
 
 from .config import AppConfig
 from .docker_service import DockerService
-from .domain import DockerServiceConfig, ProcessServiceConfig, ServiceState
+from .domain import DockerServiceConfig, ProcessServiceConfig, TerminalServiceConfig, ServiceState
 from .models import render_model_args, smallest_complete_model
 from .process_service import ProcessService
+from .terminal_service import TerminalService
 from .runtime import RuntimeStore, command_hash
 from .tuning import apply_values, is_llama_service, model_values
 from .service_base import ServiceController, ServiceStatus
@@ -26,8 +27,12 @@ class ServiceManager:
         self.services: dict[str, ServiceController] = {}
 
         for service_id, service in config.services.items():
-            if isinstance(service, ProcessServiceConfig):
-                controller: ServiceController = ProcessService(
+            if isinstance(service, TerminalServiceConfig):
+                controller: ServiceController = TerminalService(
+                    service, self.runtime_store
+                )
+            elif isinstance(service, ProcessServiceConfig):
+                controller = ProcessService(
                     service, self.runtime_store, config.settings.log_dir
                 )
             elif isinstance(service, DockerServiceConfig):
