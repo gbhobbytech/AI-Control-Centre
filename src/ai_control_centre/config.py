@@ -13,6 +13,7 @@ from .domain import (
     HarnessConfig,
     ModelConfig,
     ProcessServiceConfig,
+    TerminalServiceConfig,
     ProfileConfig,
     PromptWorkshopConfig,
     ServiceConfig,
@@ -300,7 +301,7 @@ def load_services(path: Path) -> dict[str, ServiceConfig]:
         service_type = raw.get("type")
         common = _common_kwargs(service_id, raw)
 
-        if service_type == "process":
+        if service_type in {"process", "terminal"}:
             executable = Path(
                 _expand(_require_str(raw, "executable", f"service '{service_id}'"))
             )
@@ -337,7 +338,7 @@ def load_services(path: Path) -> dict[str, ServiceConfig]:
                     )
                 model_defaults[key] = str(value)
 
-            services[service_id] = ProcessServiceConfig(
+            process_kwargs = dict(
                 **common,
                 executable=executable,
                 args=args,
@@ -349,6 +350,33 @@ def load_services(path: Path) -> dict[str, ServiceConfig]:
                 ),
                 model_defaults=model_defaults,
             )
+            if service_type == "terminal":
+                if common["health"] is not None:
+                    raise ConfigError(
+                        f"service '{service_id}': terminal services do not use HTTP health checks"
+                    )
+                terminal_args_raw = raw.get("terminal_args", ["-e"])
+                if not isinstance(terminal_args_raw, list) or not all(
+                    isinstance(item, str) for item in terminal_args_raw
+                ):
+                    raise ConfigError(
+                        f"service '{service_id}': terminal_args must be an array of strings"
+                    )
+                startup_grace = float(raw.get("startup_grace", 0.75))
+                if startup_grace < 0:
+                    raise ConfigError(
+                        f"service '{service_id}': startup_grace must be zero or greater"
+                    )
+                services[service_id] = TerminalServiceConfig(
+                    **process_kwargs,
+                    terminal_executable=_expand(
+                        str(raw.get("terminal_executable", "x-terminal-emulator"))
+                    ),
+                    terminal_args=tuple(_expand(item) for item in terminal_args_raw),
+                    startup_grace=startup_grace,
+                )
+            else:
+                services[service_id] = ProcessServiceConfig(**process_kwargs)
         elif service_type == "docker":
             services[service_id] = DockerServiceConfig(
                 **common,
@@ -359,7 +387,7 @@ def load_services(path: Path) -> dict[str, ServiceConfig]:
             )
         else:
             raise ConfigError(
-                f"service '{service_id}': supported types are 'process' and 'docker'; got {service_type!r}"
+                f"service '{service_id}': supported types are 'process', 'terminal' and 'docker'; got {service_type!r}"
             )
 
     for service_id, service in services.items():
