@@ -16,6 +16,7 @@ _AGENT_HINTS = (
     "browser-use",
     "browser use",
     "autogen",
+    "aider",
 )
 
 
