@@ -64,6 +64,8 @@ def apply_theme(root, values=None) -> dict:
     style.configure('Background.TFrame', background=palette['background'])
     style.configure('TLabel', background=palette['panel'], foreground=palette['text'])
     style.configure('Muted.TLabel', foreground=palette['muted'])
+    style.configure('Accent.TLabel', foreground=palette['accent'], font='AppHeading')
+    style.configure('Tooltip.TLabel', background=palette['field'], foreground=palette['text'], bordercolor=palette['accent'], relief='solid', borderwidth=1)
     style.configure('Title.TLabel', font='AppTitle', foreground=palette['text'])
     style.configure('TLabelframe', background=palette['panel'], bordercolor=palette['border'], relief='solid', borderwidth=1)
     style.configure('TLabelframe.Label', font='AppHeading', foreground=palette['text'], background=palette['panel'])
