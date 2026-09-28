@@ -20,7 +20,7 @@ executable = "{sys.executable}"
 cwd = "{tmp_path}"
 args = ["-c", "print('hello')"]
 terminal_executable = "{sys.executable}"
-terminal_args = ["-c", "import time; time.sleep(5)"]
+terminal_args = ["-c", "import os,sys; os.execv(sys.argv[1], sys.argv[1:])"]
 startup_grace = 0.1
 dependencies = []
 """.strip(),
@@ -41,10 +41,10 @@ def test_terminal_service_reports_ready_and_stops(tmp_path: Path):
         id="terminal",
         display_name="Terminal",
         executable=Path(sys.executable),
-        args=(),
+        args=("-c", "import time; time.sleep(30)"),
         cwd=tmp_path,
         terminal_executable=sys.executable,
-        terminal_args=("-c", "import time; time.sleep(30)"),
+        terminal_args=("-c", "import os,sys; os.execv(sys.argv[1], sys.argv[1:])"),
         startup_grace=0.1,
         stop_timeout=1.0,
     )
