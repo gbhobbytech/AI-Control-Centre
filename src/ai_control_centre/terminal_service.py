@@ -70,8 +70,7 @@ class TerminalService:
                 )
             return current
 
-        terminal = shutil.which(self.config.terminal_executable)
-        if terminal is None:
+        if shutil.which(self.config.terminal_executable) is None:
             raise FileNotFoundError(
                 f"Terminal executable not found: {self.config.terminal_executable}"
             )
@@ -83,12 +82,7 @@ class TerminalService:
         env = os.environ.copy()
         env.update(self.config.environment)
 
-        command = [
-            terminal,
-            *self.config.terminal_args,
-            str(self.config.executable),
-            *self.config.args,
-        ]
+        command = list(self.config.command)
         process = subprocess.Popen(
             command,
             cwd=self.config.cwd,
