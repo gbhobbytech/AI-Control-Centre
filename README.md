@@ -2,7 +2,7 @@
 
 A lightweight Linux control panel for running local AI services without manually managing processes, ports, models and GPU resources.
 
-**Current release: 1.0.8**
+**Current release: 1.1.0**
 
 ![AI Control Centre main window](assets/screenshots/main-window.png)
 
