@@ -14,6 +14,7 @@ AI Control Centre is designed for local AI workstations where several tools may 
 - recursive local GGUF discovery, including split models
 - per-model llama.cpp tuning
 - configurable Agent harnesses
+- interactive terminal-service support for CLI tools such as Aider
 - dependency-aware service startup and shutdown
 - readiness checks and service logs
 - CPU, RAM, GPU, VRAM and temperature monitoring where supported
@@ -135,6 +136,43 @@ Agent is configured as **model + harness**.
 
 A harness can combine one or more services with the interface that should open when the environment is ready. This keeps the Agent task independent of any single automation runtime.
 
+Configured services can currently use three service types:
+
+- `process` - background processes and local servers such as llama.cpp and ComfyUI
+- `docker` - existing Docker containers such as an isolated Computer environment
+- `terminal` - interactive command-line applications that require a real terminal/TTY
+
+Terminal services are useful for interactive local AI tools such as Aider. AI Control Centre launches the tool in the user's configured terminal, tracks the interactive process rather than the terminal launcher, and integrates it with normal dependency startup, service state and Stop All behaviour.
+
+For example:
+
+```toml
+[services.aider]
+display_name = "Aider"
+type = "terminal"
+executable = "~/ai/venvs/aider/bin/aider"
+cwd = "~/ai/projects/example-project"
+
+args = [
+  "--model", "openai/local-model",
+  "--openai-api-base", "http://127.0.0.1:8080/v1",
+  "--openai-api-key", "local",
+  "--no-show-model-warnings",
+  "--no-show-release-notes",
+  "--no-check-update",
+  "--no-browser"
+]
+
+terminal_executable = "x-terminal-emulator"
+terminal_args = ["-e"]
+startup_grace = 0.75
+stop_timeout = 10
+gpu = false
+dependencies = ["llama"]
+```
+
+In this arrangement AI Control Centre selects and starts the llama.cpp model, waits for the LLM service to become ready, then launches Aider interactively. The generic `openai/local-model` name keeps the harness independent of the specific GGUF model loaded by the Control Centre.
+
 ## Configuration
 
 AI Control Centre uses TOML configuration for:
@@ -143,6 +181,9 @@ AI Control Centre uses TOML configuration for:
 - services
 - models
 - task profiles
+- Agent harnesses
+
+Service definitions remain machine-configurable rather than hard-coded into the application. New process, Docker and interactive terminal services can therefore be added without modifying the main application code.
 
 Machine-specific paths, ports and model choices are kept outside the main program logic.
 
