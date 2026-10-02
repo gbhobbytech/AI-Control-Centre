@@ -11,7 +11,22 @@ from .monitoring import LinuxHostMonitor, create_gpu_monitor
 from .preferences import save_model_tuning
 from .theme import style_classic
 from .ui_utils import ScrollableFrame, fit_window_to_screen
-from .tuning import BASELINE, CACHE_TYPES, CURRENT_TUNING_SCHEMA, is_llama_service, model_values, running_settings, suggested_tuning_presets, validate_values
+from .tuning import (
+    BASELINE,
+    CACHE_TYPES,
+    CONTEXT_TOKEN_STEPS,
+    CURRENT_TUNING_SCHEMA,
+    REPLY_TOKEN_STEPS,
+    format_token_count,
+    is_llama_service,
+    linked_reply_tokens,
+    model_values,
+    nearest_step_index,
+    reply_tokens_are_linked,
+    running_settings,
+    suggested_tuning_presets,
+    validate_values,
+)
 
 LABELS = {
     'recommended_gpu_layers': ('GPU layers', '0 keeps model layers in RAM. Increase gradually while watching VRAM.'),
@@ -36,6 +51,13 @@ class ModelTuningPanel(ttk.Frame):
         self.filling = False
         self.source = 'manual'
         self.variables = {key: tk.StringVar(self) for key in BASELINE}
+        self.context_step = tk.IntVar(self, value=nearest_step_index(BASELINE['recommended_context_length'], CONTEXT_TOKEN_STEPS))
+        self.reply_step = tk.IntVar(self, value=nearest_step_index(BASELINE['max_output_tokens'], REPLY_TOKEN_STEPS))
+        self.context_display = tk.StringVar(self)
+        self.reply_display = tk.StringVar(self)
+        self.token_linked = tk.BooleanVar(self, value=True)
+        self.link_text = tk.StringVar(self, value='🔗 Linked')
+        self._token_syncing = False
         self.model_label = tk.StringVar(self)
         self.status = tk.StringVar(self)
         self.hardware_summary = tk.StringVar(self, value='Detecting hardware…')
@@ -78,7 +100,17 @@ class ModelTuningPanel(ttk.Frame):
             ttk.Label(self, text=label).grid(row=row, column=0, sticky='w', padx=(0, 12), pady=5)
             var = self.variables[key]
             choices = CACHE_TYPES if key.startswith('cache_type') else (('auto', 'on', 'off') if key == 'flash_attention' else None)
-            if choices:
+            if key == 'recommended_context_length':
+                field = self._build_token_slider(
+                    self, var, self.context_step, self.context_display, CONTEXT_TOKEN_STEPS,
+                    self._context_slider_changed, self._context_step_by,
+                )
+            elif key == 'max_output_tokens':
+                field = self._build_token_slider(
+                    self, var, self.reply_step, self.reply_display, REPLY_TOKEN_STEPS,
+                    self._reply_slider_changed, self._reply_step_by, show_link=True,
+                )
+            elif choices:
                 field = ttk.OptionMenu(self, var, var.get(), *choices)
             else:
                 field = ttk.Entry(self, textvariable=var, width=12)
@@ -100,6 +132,130 @@ class ModelTuningPanel(ttk.Frame):
             self.launch_button.pack(side='left', padx=8)
         self.set_models(self.models, initial_model)
         style_classic(self)
+
+    def _build_token_slider(self, parent, value_var, step_var, display_var, steps, on_slide, on_step, *, show_link=False):
+        frame = ttk.Frame(parent)
+        frame.columnconfigure(1, weight=1)
+        ttk.Button(frame, text='−', width=3, command=lambda: on_step(-1)).grid(row=0, column=0, padx=(0, 5))
+        scale = ttk.Scale(
+            frame, from_=0, to=len(steps) - 1, variable=step_var,
+            command=on_slide,
+        )
+        scale.grid(row=0, column=1, sticky='ew')
+        ttk.Button(frame, text='+', width=3, command=lambda: on_step(1)).grid(row=0, column=2, padx=(5, 8))
+        ttk.Label(frame, textvariable=display_var, width=18, anchor='e').grid(row=0, column=3, sticky='e')
+        if show_link:
+            self.link_button = ttk.Button(frame, textvariable=self.link_text, width=10, command=self._toggle_token_link)
+            self.link_button.grid(row=0, column=4, padx=(8, 0))
+        return frame
+
+    @staticmethod
+    def _token_display(value: int) -> str:
+        return f'{format_token_count(value)} ({int(value):,})'
+
+    def _set_token_value(self, key, value, step_var, display_var, steps):
+        value = int(value)
+        self._token_syncing = True
+        try:
+            self.variables[key].set(str(value))
+            step_var.set(nearest_step_index(value, steps))
+            display_var.set(self._token_display(value))
+        finally:
+            self._token_syncing = False
+
+    def _context_slider_changed(self, raw):
+        if self._token_syncing:
+            return
+        index = max(0, min(len(CONTEXT_TOKEN_STEPS) - 1, int(round(float(raw)))))
+        self.context_step.set(index)
+        context = CONTEXT_TOKEN_STEPS[index]
+        self._set_token_value(
+            'recommended_context_length', context,
+            self.context_step, self.context_display, CONTEXT_TOKEN_STEPS,
+        )
+        if self.token_linked.get():
+            reply = linked_reply_tokens(context)
+            self._set_token_value(
+                'max_output_tokens', reply,
+                self.reply_step, self.reply_display, REPLY_TOKEN_STEPS,
+            )
+        else:
+            current_reply = int(self.variables['max_output_tokens'].get() or 0)
+            if current_reply > context:
+                allowed = [value for value in REPLY_TOKEN_STEPS if value <= context]
+                reply = allowed[-1] if allowed else min(context, REPLY_TOKEN_STEPS[0])
+                self._set_token_value(
+                    'max_output_tokens', reply,
+                    self.reply_step, self.reply_display, REPLY_TOKEN_STEPS,
+                )
+                self.status.set('Maximum reply tokens were reduced to stay within the selected context size.')
+        self._changed()
+
+    def _reply_slider_changed(self, raw):
+        if self._token_syncing:
+            return
+        index = max(0, min(len(REPLY_TOKEN_STEPS) - 1, int(round(float(raw)))))
+        context = int(self.variables['recommended_context_length'].get() or BASELINE['recommended_context_length'])
+        allowed = [i for i, value in enumerate(REPLY_TOKEN_STEPS) if value <= context]
+        max_index = allowed[-1] if allowed else 0
+        index = min(index, max_index)
+        self.reply_step.set(index)
+        reply = REPLY_TOKEN_STEPS[index]
+        self._set_token_value(
+            'max_output_tokens', reply,
+            self.reply_step, self.reply_display, REPLY_TOKEN_STEPS,
+        )
+        if self.token_linked.get() and reply != linked_reply_tokens(context):
+            self.token_linked.set(False)
+            self._refresh_link_state()
+        self._changed()
+
+    def _context_step_by(self, delta):
+        index = max(0, min(len(CONTEXT_TOKEN_STEPS) - 1, self.context_step.get() + delta))
+        self._context_slider_changed(index)
+
+    def _reply_step_by(self, delta):
+        if self.token_linked.get():
+            self.token_linked.set(False)
+            self._refresh_link_state()
+        index = max(0, min(len(REPLY_TOKEN_STEPS) - 1, self.reply_step.get() + delta))
+        self._reply_slider_changed(index)
+
+    def _toggle_token_link(self):
+        linked = not self.token_linked.get()
+        self.token_linked.set(linked)
+        self._refresh_link_state()
+        if linked:
+            context = int(self.variables['recommended_context_length'].get() or BASELINE['recommended_context_length'])
+            reply = linked_reply_tokens(context)
+            self._set_token_value(
+                'max_output_tokens', reply,
+                self.reply_step, self.reply_display, REPLY_TOKEN_STEPS,
+            )
+            self._changed()
+
+    def _refresh_link_state(self):
+        self.link_text.set('🔗 Linked' if self.token_linked.get() else '🔓 Unlinked')
+
+    def _sync_token_controls(self):
+        try:
+            context = int(self.variables['recommended_context_length'].get())
+        except (TypeError, ValueError):
+            context = BASELINE['recommended_context_length']
+        try:
+            reply = int(self.variables['max_output_tokens'].get())
+        except (TypeError, ValueError):
+            reply = BASELINE['max_output_tokens']
+        self._token_syncing = True
+        try:
+            self.context_step.set(nearest_step_index(context, CONTEXT_TOKEN_STEPS))
+            self.reply_step.set(nearest_step_index(reply, REPLY_TOKEN_STEPS))
+            self.context_display.set(self._token_display(context))
+            self.reply_display.set(self._token_display(reply))
+            self.token_linked.set(reply_tokens_are_linked(context, reply))
+            self._refresh_link_state()
+        finally:
+            self._token_syncing = False
 
     def _detect_hardware(self):
         try:
@@ -149,9 +305,13 @@ class ModelTuningPanel(ttk.Frame):
         values = preset.values
         layers = values['recommended_gpu_layers']
         layer_text = 'full/offload-all request' if layers == 999 else str(layers)
+        context = int(values['recommended_context_length'])
+        reply = int(values['max_output_tokens'])
+        linked = ' · Linked' if reply_tokens_are_linked(context, reply) else ''
         self.preset_summary.set(
-            f'{preset.display_name}: GPU layers {layer_text}, context {values["recommended_context_length"]}, '
-            f'K/V cache {values["cache_type_k"]}/{values["cache_type_v"]}. {preset.summary}'
+            f'{preset.display_name}: GPU layers {layer_text}, context {format_token_count(context)}, '
+            f'reply {format_token_count(reply)}{linked}, K/V cache {values["cache_type_k"]}/{values["cache_type_v"]}. '
+            f'{preset.summary}'
         )
 
     def _apply_preset(self):
@@ -164,6 +324,8 @@ class ModelTuningPanel(ttk.Frame):
         self.status.set(f'{preset.display_name} starting values applied. Review them, then save and launch. Successful loading is the next check.')
 
     def _changed(self, *_):
+        if self._token_syncing:
+            return
         if not self.filling:
             self.dirty = True
             self.source = 'manual'
@@ -210,6 +372,7 @@ class ModelTuningPanel(ttk.Frame):
                     self.variables[key].set(str(value))
         finally:
             self.filling = False
+        self._sync_token_controls()
 
     def _baseline(self):
         self._fill(BASELINE)
