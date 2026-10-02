@@ -51,8 +51,8 @@ class ModelTuningPanel(ttk.Frame):
         self.filling = False
         self.source = 'manual'
         self.variables = {key: tk.StringVar(self) for key in BASELINE}
-        self.context_step = tk.IntVar(self, value=nearest_step_index(BASELINE['recommended_context_length'], CONTEXT_TOKEN_STEPS))
-        self.reply_step = tk.IntVar(self, value=nearest_step_index(BASELINE['max_output_tokens'], REPLY_TOKEN_STEPS))
+        self.context_step = tk.DoubleVar(self, value=nearest_step_index(BASELINE['recommended_context_length'], CONTEXT_TOKEN_STEPS))
+        self.reply_step = tk.DoubleVar(self, value=nearest_step_index(BASELINE['max_output_tokens'], REPLY_TOKEN_STEPS))
         self.context_display = tk.StringVar(self)
         self.reply_display = tk.StringVar(self)
         self.token_linked = tk.BooleanVar(self, value=True)
@@ -211,14 +211,14 @@ class ModelTuningPanel(ttk.Frame):
         self._changed()
 
     def _context_step_by(self, delta):
-        index = max(0, min(len(CONTEXT_TOKEN_STEPS) - 1, self.context_step.get() + delta))
+        index = max(0, min(len(CONTEXT_TOKEN_STEPS) - 1, int(round(self.context_step.get())) + delta))
         self._context_slider_changed(index)
 
     def _reply_step_by(self, delta):
         if self.token_linked.get():
             self.token_linked.set(False)
             self._refresh_link_state()
-        index = max(0, min(len(REPLY_TOKEN_STEPS) - 1, self.reply_step.get() + delta))
+        index = max(0, min(len(REPLY_TOKEN_STEPS) - 1, int(round(self.reply_step.get())) + delta))
         self._reply_slider_changed(index)
 
     def _toggle_token_link(self):
