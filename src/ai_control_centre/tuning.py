@@ -20,6 +20,35 @@ BASELINE = {
 }
 CURRENT_TUNING_SCHEMA = 1
 
+CONTEXT_TOKEN_STEPS = (2048, 4096, 8192, 16384, 32768, 65536, 131072)
+REPLY_TOKEN_STEPS = (512, 1024, 2048, 4096, 8192, 16384, 32768, 65536)
+
+
+def format_token_count(value: int) -> str:
+    """Return a compact binary-token label while keeping the exact value available."""
+    value = int(value)
+    if value >= 1024 and value % 1024 == 0:
+        return f'{value // 1024}K'
+    return f'{value:,}'
+
+
+def nearest_step_index(value: int, steps: Sequence[int]) -> int:
+    """Return the index of the nearest discrete tuning step."""
+    value = int(value)
+    return min(range(len(steps)), key=lambda index: abs(steps[index] - value))
+
+
+def linked_reply_tokens(context_tokens: int) -> int:
+    """Use half the context as a simple reply ceiling, bounded to supported steps."""
+    target = max(REPLY_TOKEN_STEPS[0], int(context_tokens) // 2)
+    candidates = [step for step in REPLY_TOKEN_STEPS if step <= target]
+    return candidates[-1] if candidates else REPLY_TOKEN_STEPS[0]
+
+
+def reply_tokens_are_linked(context_tokens: int, reply_tokens: int) -> bool:
+    return int(reply_tokens) == linked_reply_tokens(int(context_tokens))
+
+
 CACHE_TYPES = ('f16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'bf16', 'f32')
 FLAGS = {
     'recommended_gpu_layers': ('-ngl', '--gpu-layers', '--n-gpu-layers'),
