@@ -4,6 +4,15 @@ Notable changes to AI Control Centre are recorded here.
 
 This file is intentionally concise. Detailed implementation history remains available in the Git commit log.
 
+## 1.1.1
+
+- Added power-of-two sliders for model context and maximum reply tokens.
+- Added linked context/reply tuning with a simple chain toggle.
+- Linked reply length defaults to half of the selected context.
+- Added compact step controls for increasing and decreasing token limits.
+- Improved model-tuning layout at normal Settings window sizes.
+- Preserved integer-based model tuning configuration for backward compatibility.
+
 ## 1.0.8
 
 - Removed the installer's unnecessary pip upgrade and package-install steps.
