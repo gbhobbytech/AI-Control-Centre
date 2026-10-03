@@ -56,7 +56,7 @@ class ModelTuningPanel(ttk.Frame):
         self.context_display = tk.StringVar(self)
         self.reply_display = tk.StringVar(self)
         self.token_linked = tk.BooleanVar(self, value=True)
-        self.link_text = tk.StringVar(self, value='🔗 Linked')
+        self.link_text = tk.StringVar(self, value='🔗')
         self._token_syncing = False
         self.model_label = tk.StringVar(self)
         self.status = tk.StringVar(self)
@@ -136,20 +136,20 @@ class ModelTuningPanel(ttk.Frame):
     def _build_token_slider(self, parent, value_var, step_var, display_var, steps, on_slide, on_step, *, show_link=False):
         frame = ttk.Frame(parent)
         frame.columnconfigure(1, weight=1)
-        ttk.Button(frame, text='−', width=3, command=lambda: on_step(-1)).grid(row=0, column=0, padx=(0, 5))
+        ttk.Button(frame, text='−', width=2, command=lambda: on_step(-1)).grid(row=0, column=0, padx=(0, 3))
         scale = ttk.Scale(
             frame, from_=0, to=len(steps) - 1, variable=step_var,
             command=on_slide,
         )
         scale.grid(row=0, column=1, sticky='ew')
-        ttk.Button(frame, text='+', width=3, command=lambda: on_step(1)).grid(row=0, column=2, padx=(5, 8))
-        ttk.Label(frame, textvariable=display_var, width=18, anchor='e').grid(row=0, column=3, sticky='e')
+        ttk.Button(frame, text='+', width=2, command=lambda: on_step(1)).grid(row=0, column=2, padx=(3, 5))
+        ttk.Label(frame, textvariable=display_var, width=13, anchor='e').grid(row=0, column=3, sticky='e')
         if show_link:
             self.link_button = ttk.Button(
-                frame, textvariable=self.link_text, width=10,
+                frame, textvariable=self.link_text, width=3,
                 command=self._toggle_token_link,
             )
-            self.link_button.grid(row=1, column=1, columnspan=3, sticky='e', pady=(4, 0))
+            self.link_button.grid(row=0, column=4, padx=(5, 0))
         return frame
 
     @staticmethod
@@ -238,7 +238,7 @@ class ModelTuningPanel(ttk.Frame):
             self._changed()
 
     def _refresh_link_state(self):
-        self.link_text.set('🔗 Linked' if self.token_linked.get() else '🔓 Unlinked')
+        self.link_text.set('🔗' if self.token_linked.get() else '⛓')
 
     def _sync_token_controls(self):
         try:
