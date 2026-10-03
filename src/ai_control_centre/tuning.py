@@ -122,7 +122,7 @@ def suggested_tuning_presets(
         **BASELINE,
         'recommended_gpu_layers': balanced_layers,
         'recommended_context_length': 8192,
-        'max_output_tokens': 2048,
+        'max_output_tokens': 4096,
         'cache_type_k': 'q8_0',
         'cache_type_v': 'q8_0',
         'flash_attention': 'auto',
