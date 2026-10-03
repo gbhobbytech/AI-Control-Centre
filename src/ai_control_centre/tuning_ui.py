@@ -238,7 +238,7 @@ class ModelTuningPanel(ttk.Frame):
             self._changed()
 
     def _refresh_link_state(self):
-        self.link_text.set('🔗' if self.token_linked.get() else '⛓')
+        self.link_text.set('🔗' if self.token_linked.get() else '🔓')
 
     def _sync_token_controls(self):
         try:
