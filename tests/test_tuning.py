@@ -11,8 +11,60 @@ from ai_control_centre.preferences import save_model_tuning, save_appearance, wr
 from ai_control_centre.runtime import ProcessRecord, command_hash
 from ai_control_centre.service_base import ServiceStatus
 from ai_control_centre.theme import DEFAULT_APPEARANCE, contrast_text
-from ai_control_centre.tuning import BASELINE, apply_values, model_values, parse_launch, validate_values
+from ai_control_centre.tuning import (
+    BASELINE,
+    CONTEXT_TOKEN_STEPS,
+    REPLY_TOKEN_STEPS,
+    apply_values,
+    format_token_count,
+    linked_reply_tokens,
+    model_values,
+    nearest_step_index,
+    parse_launch,
+    reply_tokens_are_linked,
+    validate_values,
+)
 
+
+
+def test_token_slider_steps_are_binary_and_monotonic():
+    assert CONTEXT_TOKEN_STEPS == (
+        512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
+        131072, 262144, 524288, 1048576, 2097152,
+    )
+    assert REPLY_TOKEN_STEPS == (
+        256, 512, 1024, 2048, 4096, 8192, 16384, 32768,
+        65536, 131072, 262144, 524288, 1048576,
+    )
+    assert all(value & (value - 1) == 0 for value in CONTEXT_TOKEN_STEPS)
+    assert all(value & (value - 1) == 0 for value in REPLY_TOKEN_STEPS)
+
+
+@pytest.mark.parametrize(('context', 'reply'), [
+    (512, 256),
+    (1024, 512),
+    (2048, 1024),
+    (4096, 2048),
+    (8192, 4096),
+    (16384, 8192),
+    (32768, 16384),
+    (65536, 32768),
+    (131072, 65536),
+    (262144, 131072),
+    (524288, 262144),
+    (1048576, 524288),
+    (2097152, 1048576),
+])
+def test_linked_reply_uses_half_context(context, reply):
+    assert linked_reply_tokens(context) == reply
+    assert reply_tokens_are_linked(context, reply)
+
+
+def test_nearest_step_and_display_preserve_custom_values_without_rewriting_them():
+    assert nearest_step_index(30000, CONTEXT_TOKEN_STEPS) == CONTEXT_TOKEN_STEPS.index(32768)
+    assert format_token_count(32768) == '32K'
+    assert format_token_count(30000) == '30,000'
+    assert not reply_tokens_are_linked(30000, 4096)
 
 def test_new_model_has_hardware_neutral_starting_values():
     model = ModelConfig(id='new', display_name='New', path=Path('/models/new.gguf'))
