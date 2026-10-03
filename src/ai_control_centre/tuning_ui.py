@@ -145,8 +145,11 @@ class ModelTuningPanel(ttk.Frame):
         ttk.Button(frame, text='+', width=3, command=lambda: on_step(1)).grid(row=0, column=2, padx=(5, 8))
         ttk.Label(frame, textvariable=display_var, width=18, anchor='e').grid(row=0, column=3, sticky='e')
         if show_link:
-            self.link_button = ttk.Button(frame, textvariable=self.link_text, width=10, command=self._toggle_token_link)
-            self.link_button.grid(row=0, column=4, padx=(8, 0))
+            self.link_button = ttk.Button(
+                frame, textvariable=self.link_text, width=10,
+                command=self._toggle_token_link,
+            )
+            self.link_button.grid(row=1, column=1, columnspan=3, sticky='e', pady=(4, 0))
         return frame
 
     @staticmethod
@@ -249,10 +252,12 @@ class ModelTuningPanel(ttk.Frame):
         self._token_syncing = True
         try:
             self.context_step.set(nearest_step_index(context, CONTEXT_TOKEN_STEPS))
-            self.reply_step.set(nearest_step_index(reply, REPLY_TOKEN_STEPS))
             self.context_display.set(self._token_display(context))
+            self.token_linked.set(True)
+            reply = linked_reply_tokens(context)
+            self.variables['max_output_tokens'].set(str(reply))
+            self.reply_step.set(nearest_step_index(reply, REPLY_TOKEN_STEPS))
             self.reply_display.set(self._token_display(reply))
-            self.token_linked.set(reply_tokens_are_linked(context, reply))
             self._refresh_link_state()
         finally:
             self._token_syncing = False
@@ -319,6 +324,14 @@ class ModelTuningPanel(ttk.Frame):
         if preset is None:
             return
         self._fill(preset.values)
+        context = int(self.variables['recommended_context_length'].get())
+        reply = linked_reply_tokens(context)
+        self._set_token_value(
+            'max_output_tokens', reply,
+            self.reply_step, self.reply_display, REPLY_TOKEN_STEPS,
+        )
+        self.token_linked.set(True)
+        self._refresh_link_state()
         self.dirty = True
         self.source = f'ready reckoner: {preset.display_name.lower()}'
         self.status.set(f'{preset.display_name} starting values applied. Review them, then save and launch. Successful loading is the next check.')
