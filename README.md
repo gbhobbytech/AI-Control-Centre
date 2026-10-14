@@ -2,7 +2,7 @@
 
 A lightweight Linux control panel for running local AI services without manually managing processes, ports, models and GPU resources.
 
-**Current release: 1.1.0**
+**Current release: 1.2.0**
 
 ![AI Control Centre main window](assets/screenshots/main-window.png)
 
@@ -13,7 +13,7 @@ AI Control Centre is designed for local AI workstations where several tools may 
 - **Coding, Chat, Agent and Image** task environments
 - recursive local GGUF discovery, including split models
 - per-model llama.cpp tuning
-- configurable Agent harnesses
+- configurable Agent harnesses, including opt-in DeepSeek Harness support
 - dependency-aware service startup and shutdown
 - readiness checks and service logs
 - CPU, RAM, GPU, VRAM and temperature monitoring where supported
