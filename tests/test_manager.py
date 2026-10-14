@@ -150,3 +150,60 @@ def test_start_harness_reuses_running_dependency_model(tmp_path: Path, monkeypat
         ("llama", "qwen_coder"), ("deepseek", "qwen_coder"),
     ]
     assert all(status.state == ServiceState.READY for _, status in results)
+
+
+def test_start_harness_uses_agent_model_when_dependency_stopped(tmp_path: Path, monkeypatch):
+    """A cold harness start uses the Agent model, not llama's unrelated default."""
+    from ai_control_centre.domain import HarnessConfig
+    from ai_control_centre.service_base import ServiceStatus
+
+    llama = ProcessServiceConfig(
+        id="llama", display_name="LLM", executable=Path(sys.executable),
+        args=("-m", "{model.path}"), cwd=tmp_path, default_model="heretic",
+    )
+    harness = ProcessServiceConfig(
+        id="deepseek", display_name="DeepSeek", executable=Path(sys.executable),
+        cwd=tmp_path, dependencies=("llama",),
+    )
+    config = AppConfig(
+        settings=Settings(log_dir=tmp_path / "logs", runtime_dir=tmp_path / "runtime"),
+        services={"llama": llama, "deepseek": harness},
+        profiles={"agent": ProfileConfig(
+            id="agent", display_name="Agent", services=("llama",),
+            harness="deepseek_harness", selected_model="qwen_coder",
+        )},
+        harnesses={"deepseek_harness": HarnessConfig(
+            id="deepseek_harness", display_name="DeepSeek", services=("deepseek",),
+        )},
+    )
+    manager = ServiceManager(config)
+
+    class FakeController:
+        config = None
+
+        def __init__(self):
+            self.state = ServiceState.STOPPED
+
+        def status(self):
+            return ServiceStatus(self.state, "test")
+
+        def start(self):
+            self.state = ServiceState.READY
+            return self.status()
+
+    controllers = {"llama": FakeController(), "deepseek": FakeController()}
+    selected = []
+    monkeypatch.setattr(manager, "get", lambda sid: controllers[sid])
+    monkeypatch.setattr(manager, "_controller_for_start", lambda sid, model: (
+        selected.append((sid, model)) or controllers[sid]
+    ))
+    monkeypatch.setattr(manager, "_prepare_conflicts", lambda *args, **kwargs: [])
+    monkeypatch.setattr(manager, "_prepare_model_switch", lambda *args, **kwargs: [])
+
+    results = manager.start_service("deepseek")
+    assert [sid for sid, _ in results] == ["llama", "deepseek"]
+    assert selected == [
+        ("llama", "qwen_coder"), ("deepseek", "qwen_coder"),
+        ("llama", "qwen_coder"), ("deepseek", "qwen_coder"),
+    ]
+    assert all(status.state == ServiceState.READY for _, status in results)
