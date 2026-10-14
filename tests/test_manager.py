@@ -114,6 +114,7 @@ def test_start_harness_reuses_running_dependency_model(tmp_path: Path, monkeypat
     config = AppConfig(
         settings=Settings(log_dir=tmp_path / "logs", runtime_dir=tmp_path / "runtime"),
         services={"llama": llama, "deepseek": harness},
+        profiles={},
     )
     manager = ServiceManager(config)
 
