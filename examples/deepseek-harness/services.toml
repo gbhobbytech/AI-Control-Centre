@@ -1,0 +1,31 @@
+# Append this section to ~/.config/ai-control-centre/services.toml.
+# Orson example only: adjust the npx path for other machines.
+# Install/cache the pinned package separately before launching from Control Centre.
+# This service will not prompt to install packages.
+
+[services.deepseek_harness]
+display_name = "DeepSeek Harness"
+type = "process"
+executable = "~/.local/share/pi-node/node-v22.23.2-linux-x64/bin/npx"
+cwd = "~/Documents/deepseek-harness/default-workspace"
+args = ["--no-install", "@deepseek-ai/dsh@0.2.0-rc.2", "web", "--no-open", "--host", "127.0.0.1", "--port", "3080"]
+open_url = "http://127.0.0.1:3080"
+dependencies = ["llama"]
+stop_timeout = 10
+log_max_bytes = 2000000
+gpu = false
+
+# Node is installed outside the ordinary system PATH on Orson.
+# Expand the existing PATH rather than replacing it completely.
+[services.deepseek_harness.environment]
+PATH = "~/.local/share/pi-node/node-v22.23.2-linux-x64/bin:$PATH"
+
+# Provisional readiness probe; confirm that an unauthenticated GET / returns
+# HTTP 200 on the installed DSH build before enabling this section.
+# If it does not, do not mistake the model API for a DSH health endpoint.
+# [services.deepseek_harness.health]
+# url = "http://127.0.0.1:3080/"
+# expected_status = 200
+# retry_interval = 1.0
+# startup_timeout = 60.0
+# request_timeout = 2.0
