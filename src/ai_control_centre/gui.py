@@ -17,6 +17,7 @@ except ImportError as exc:  # pragma: no cover - depends on host packaging
 from .config import ConfigError, load_app_config
 from .domain import ProcessServiceConfig, ServiceState
 from .manager import ServiceManager
+from .harnesses import visible_service_ids
 from .models import smallest_complete_model
 from .monitoring import GpuStatus, HostStatus, LinuxHostMonitor, create_gpu_monitor
 from .preferences import save_window_size
@@ -67,6 +68,7 @@ class ControlCentreWindow(tk.Tk):
         self.task_buttons = {}
         self.state_labels = {}
         self.service_vars: dict[str, tuple[tk.StringVar, tk.StringVar]] = {}
+        self.service_rows: dict[str, tuple[tk.Widget, ...]] = {}
         self.model_label_to_id: dict[str, str] = {}
 
         self.gpu_name_var = tk.StringVar(value="Checking...")
@@ -242,7 +244,9 @@ class ControlCentreWindow(tk.Tk):
                 width=8,
                 command=lambda sid=service_id: self._show_logs(sid),
             ).grid(row=row, column=6, padx=3)
+            self.service_rows[service_id] = tuple(services.grid_slaves(row=row))
             row += 1
+        self._update_visible_service_rows()
 
         workspace = ttk.Panedwindow(outer, orient=tk.HORIZONTAL)
         workspace.grid(row=4, column=0, sticky="nsew")
@@ -252,6 +256,20 @@ class ControlCentreWindow(tk.Tk):
         workspace.add(prompt_panel, weight=3)
         self._build_system_panel(system_panel)
         self._build_prompt_panel(prompt_panel)
+
+    def _update_visible_service_rows(self) -> None:
+        """Show only the selected agent harness; preserve all service controllers."""
+        profile = self.config_data.profiles.get("agent")
+        selected_harness = profile.harness if profile is not None else None
+        visible = visible_service_ids(
+            self.config_data.services, self.config_data.harnesses, selected_harness
+        )
+        for service_id, widgets in self.service_rows.items():
+            for widget in widgets:
+                if service_id in visible:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
 
     def _build_system_panel(self, panel: ttk.LabelFrame) -> None:
         panel.columnconfigure(1, weight=1)
@@ -456,6 +474,7 @@ class ControlCentreWindow(tk.Tk):
         self.gpu_monitor = create_gpu_monitor(config.settings.gpu_backend)
         self._rebuild_model_menu()
         self._update_capabilities()
+        self._update_visible_service_rows()
         self.status_var.set("Configuration saved and reloaded")
         self._refresh_all()
 
