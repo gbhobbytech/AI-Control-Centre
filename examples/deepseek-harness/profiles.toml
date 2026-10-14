@@ -1,0 +1,8 @@
+# Append this harness definition to ~/.config/ai-control-centre/profiles.toml.
+# Then choose DeepSeek Harness for the existing Agent task under Preferences > Settings.
+# Do not replace the existing Agent profile or Computer DMZ harness.
+
+[harnesses.deepseek_harness]
+display_name = "DeepSeek Harness"
+services = ["deepseek_harness"]
+open_service = "deepseek_harness"
