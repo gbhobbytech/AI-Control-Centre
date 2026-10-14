@@ -1,67 +1,71 @@
-# DeepSeek Harness integration example (experimental)
+# DeepSeek Harness integration (experimental)
 
-This is an **opt-in** configuration for AI Control Centre. It does not install
-DeepSeek Harness or change the default Agent/Computer DMZ selection. Tested
-separately on Orson with DeepSeek Harness `0.2.0-rc.2`, a local llama.cpp API,
-and a simple Python file creation task; the **Control Centre-managed lifecycle
-has not yet been tested on Orson**.
+This opt-in integration preserves Computer DMZ as the existing default. Orson
+successfully tested DeepSeek Harness 0.2.0-rc.2 with a local llama.cpp provider
+and verified a Python file on disk. **Control Centre-managed operation is not
+validated yet.** Use the matching source branch, not an older installed release.
 
-## Prepare Orson
+## Install pinned DeepSeek Harness on Orson
 
-1. In the independently running DeepSeek Harness, retain the working
-   `local-llama` provider at `http://127.0.0.1:8080/v1`. Its model selection
-   is owned by DSH, not automatically synchronised to Control Centre.
-2. Stop the manually launched DSH instance (Ctrl+C) before testing the managed
-   service. Control Centre must not claim or stop an external instance.
-3. Confirm Node executable location using `command -v node` and
-   `command -v npx`. The example uses Orson's pi-node installation; edit the
-   executable and PATH settings on other Linux systems.
-4. Confirm the pinned version is available to npx without an install prompt:
-   `npx --no-install @deepseek-ai/dsh@0.2.0-rc.2 --version`.
-   If unavailable, install it deliberately from a terminal first. Never let
-   a background service depend on an interactive npm install prompt.
-5. Ensure the example working directory exists:
-   `mkdir -p ~/Documents/deepseek-harness/default-workspace`.
-6. Back up your user TOML files. Append the provided service and harness
-   sections to the corresponding files in `~/.config/ai-control-centre/`.
-   Do not replace existing sections.
-7. In **Preferences > Settings**, choose **DeepSeek Harness** as the Agent
-   harness and save. Start the Agent task with a reviewed local model.
-
-## Readiness and browser authentication
-
-The current ProcessService controller requires a successful HTTP health check
-to report **Ready**. DeepSeek Harness protects its Web UI with a session token,
-so an unauthenticated request to `/` might not be a valid readiness signal.
-Before enabling the commented health section in `services.toml`, test:
+Stop the manually launched DeepSeek instance with Ctrl+C before the managed test.
+Node 22 is already installed in Orson's user-local pi-node directory.
 
 ```bash
-curl -sS -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:3080/
+mkdir -p ~/ai/apps/deepseek-harness
+npm install --prefix ~/ai/apps/deepseek-harness --save-exact @deepseek-ai/dsh@0.2.0-rc.2
+~/ai/apps/deepseek-harness/node_modules/.bin/dsh --version
 ```
 
-If it returns anything other than 200, leave the health section disabled and
-expect **Running, not ready** instead of **Ready**. A robust token-aware
-readiness/open implementation is future work. The normal `open_url` points to
-the loopback address, but **does not contain the launch token**. Inspect the
-launcher-owned DSH log for the token-bearing URL on first launch; keep it
-private and do not paste it into published screenshots, GitHub, or diagnostics.
+This is a deliberate, persistent local package installation. The earlier
+`npx --no-install` failed because npx did not resolve the one-off cached
+package as a locally installed dependency. Control Centre must not fetch npm
+packages or prompt for consent during startup.
 
-When DSH is configured with the local llama.cpp server, no DeepSeek cloud API
-key should be needed. Retain DSH's existing private credentials and settings;
-Control Centre does not overwrite them.
+## Configure Control Centre
+
+1. Retain your working `local-llama` provider in DeepSeek Harness, pointing at
+   `http://127.0.0.1:8080/v1`. Keep its credentials private.
+2. Check that `~/Documents/deepseek-harness/default-workspace` exists, or
+   configure a different dedicated workspace.
+3. Back up `~/.config/ai-control-centre/services.toml` and `profiles.toml`.
+4. Append the corresponding sections in the example TOML files. Do **not**
+   overwrite the existing services, profiles or the Computer DMZ harness.
+5. Start Control Centre from the **feature/deepseek-harness** branch after
+   running its automated tests. The installed older release will not recognise
+   expected HTTP 401 as ready.
+6. Under Preferences > Settings, select **DeepSeek Harness** for the Agent task.
+   Start with a reviewed local model and confirm the model ID matches in DSH.
+
+## Health and authentication
+
+Your verified `GET http://127.0.0.1:3080/` returned HTTP **401**. This is a
+protected UI's challenge, not an unhealthy server. In this branch, the generic
+HTTP health checker accepts an HTTP error response **only when it equals the
+explicitly configured expected_status**, and only when there is no required
+body substring. Existing services expecting 200 continue to reject 401.
+
+HTTP 401 confirms an HTTP responder is present; it does not independently
+prove that the model provider, browser session or agent tools work. Another
+process could occupy the same port. Control Centre's process ownership rules
+must remain in force.
+
+The web interface issues an authentication token in its startup URL.
+`open_url = http://127.0.0.1:3080` does **not** automatically include that
+token. After starting it through Control Centre, check the service log for
+its printed token-bearing URL and open that locally. Do not publish the URL,
+copy it into repository files or make it part of diagnostic exports. A proper
+secure 'Open' action needs separate implementation and validation.
 
 ## Known limitations
 
-- The first version's service discovery is configuration-based, not automatic
-  discovery of an arbitrary npx installation.
-- The launcher currently needs a valid DSH readiness endpoint or it will show
-  the service as **Running, not ready**; readiness is not inferred solely from a
-  TCP listener.
-- The DSH model selector is independent of Control Centre's model selector.
-  If you change the running llama.cpp model, confirm its ID in DSH.
-- DSH has shell/file tools and is **not** a sandbox. Use a dedicated workspace
-  and do not grant it unrestricted access to sensitive files.
-- The installed npm package is a developer preview. Keep the version pinned
-  until a newer version is tested.
+- The service configuration references Orson's Node installation path; this
+  is an example, not a portable default.
+- A DSH process launched outside Control Centre remains externally owned.
+  Do not automatically stop it as if the launcher owned it.
+- Changing the selected model in Control Centre does not automatically change
+  the model selected in the DeepSeek web application.
+- DeepSeek Harness has powerful shell and filesystem tools, and is not a
+  sandbox. Use a dedicated non-sensitive workspace.
+- DeepSeek is a developer-preview package: keep this tested version pinned.
 
 Upstream: https://github.com/deepseek-ai/deepseek-harness
