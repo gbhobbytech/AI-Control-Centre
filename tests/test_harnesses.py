@@ -52,3 +52,22 @@ def test_custom_harness_services_exclude_model_and_prompt_helper():
     }
     result = available_custom_harness_services(services, prompt_helper_service="prompt_helper")
     assert set(result) == {"computer"}
+
+
+def test_discovers_deepseek_harness_process():
+    services = {
+        "deepseek_harness": ProcessServiceConfig(
+            id="deepseek_harness",
+            display_name="DeepSeek Harness",
+            executable=Path("/usr/bin/npx"),
+            args=("@deepseek-ai/dsh@0.2.0-rc.2", "web", "--no-open"),
+            cwd=Path("/tmp"),
+            dependencies=("llama",),
+            open_url="http://127.0.0.1:3080",
+        ),
+    }
+    found = discover_agent_harnesses(services)
+    assert len(found) == 1
+    harness = next(iter(found.values()))
+    assert harness.services == ("deepseek_harness",)
+    assert harness.open_service == "deepseek_harness"
