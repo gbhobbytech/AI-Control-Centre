@@ -1,0 +1,32 @@
+# Experimental Orson configuration - append to the user's services.toml.
+# Install once with:
+#   mkdir -p ~/ai/apps/deepseek-harness
+#   npm install --prefix ~/ai/apps/deepseek-harness --save-exact @deepseek-ai/dsh@0.2.0-rc.2
+# Verify: ~/ai/apps/deepseek-harness/node_modules/.bin/dsh --version
+# Do not run a second manually launched instance on port 3080.
+
+[services.deepseek_harness]
+display_name = "DeepSeek Harness"
+type = "process"
+executable = "~/ai/apps/deepseek-harness/node_modules/.bin/dsh"
+cwd = "~/Documents/deepseek-harness/default-workspace"
+args = ["web", "--no-open", "--host", "127.0.0.1", "--port", "3080"]
+open_url = "http://127.0.0.1:3080"
+dependencies = ["llama"]
+stop_timeout = 10
+log_max_bytes = 2000000
+gpu = false
+
+# Orson's user-local Node installation may be absent from desktop launcher PATH.
+[services.deepseek_harness.environment]
+PATH = "~/.local/share/pi-node/node-v22.23.2-linux-x64/bin:/usr/local/bin:/usr/bin:/bin"
+
+# DeepSeek's unauthenticated root returns HTTP 401 while requiring a token.
+# An expected 401 means the authenticated UI is listening, not that a model
+# or user session is ready. Requires the matching health.py change in this PR.
+[services.deepseek_harness.health]
+url = "http://127.0.0.1:3080/"
+expected_status = 401
+retry_interval = 1.0
+startup_timeout = 60.0
+request_timeout = 2.0

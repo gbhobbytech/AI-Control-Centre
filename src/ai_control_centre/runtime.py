@@ -17,6 +17,7 @@ class ProcessRecord:
     proc_start_ticks: int
     executable: str
     command_sha256: str
+    process_command_sha256: str | None = None
     model_id: str | None = None
     launch_mode: str | None = None
 
@@ -130,7 +131,7 @@ def record_matches_process(record: ProcessRecord) -> bool:
             return False
         if proc_executable(record.pid) != record.executable:
             return False
-        if command_hash(proc_cmdline(record.pid)) != record.command_sha256:
+        if command_hash(proc_cmdline(record.pid)) != (record.process_command_sha256 or record.command_sha256):
             return False
     except (FileNotFoundError, ProcessLookupError, PermissionError, OSError, ValueError):
         return False

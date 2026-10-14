@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from ai_control_centre.domain import DockerServiceConfig, HarnessConfig, ProcessServiceConfig
-from ai_control_centre.harnesses import available_custom_harness_services, discover_agent_harnesses
+from ai_control_centre.harnesses import available_custom_harness_services, discover_agent_harnesses, visible_service_ids
 
 
 def test_discovers_configured_computer_service_as_harness():
@@ -52,3 +52,38 @@ def test_custom_harness_services_exclude_model_and_prompt_helper():
     }
     result = available_custom_harness_services(services, prompt_helper_service="prompt_helper")
     assert set(result) == {"computer"}
+
+
+def test_discovers_deepseek_harness_process():
+    services = {
+        "deepseek_harness": ProcessServiceConfig(
+            id="deepseek_harness",
+            display_name="DeepSeek Harness",
+            executable=Path("/usr/bin/npx"),
+            args=("@deepseek-ai/dsh@0.2.0-rc.2", "web", "--no-open"),
+            cwd=Path("/tmp"),
+            dependencies=("llama",),
+            open_url="http://127.0.0.1:3080",
+        ),
+    }
+    found = discover_agent_harnesses(services)
+    assert len(found) == 1
+    harness = next(iter(found.values()))
+    assert harness.services == ("deepseek_harness",)
+    assert harness.open_service == "deepseek_harness"
+
+
+def test_visible_service_rows_include_only_selected_harness():
+    services = {
+        "llama": ProcessServiceConfig(id="llama", display_name="LLM"),
+        "computer_dmz": DockerServiceConfig(id="computer_dmz", display_name="Computer DMZ"),
+        "deepseek_harness": ProcessServiceConfig(id="deepseek_harness", display_name="DeepSeek Harness"),
+        "comfyui": ProcessServiceConfig(id="comfyui", display_name="ComfyUI"),
+    }
+    harnesses = {
+        "computer": HarnessConfig(id="computer", display_name="Computer DMZ", services=("computer_dmz",)),
+        "deepseek": HarnessConfig(id="deepseek", display_name="DeepSeek Harness", services=("deepseek_harness",)),
+    }
+    assert visible_service_ids(services, harnesses, "deepseek") == {"llama", "deepseek_harness", "comfyui"}
+    assert visible_service_ids(services, harnesses, "computer") == {"llama", "computer_dmz", "comfyui"}
+    assert visible_service_ids(services, harnesses, None) == {"llama", "comfyui"}

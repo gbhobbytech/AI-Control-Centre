@@ -5,6 +5,7 @@ import signal
 import subprocess
 import time
 import webbrowser
+from dataclasses import replace
 from pathlib import Path
 
 from .domain import ProcessServiceConfig, ServiceState
@@ -14,6 +15,7 @@ from .runtime import (
     RuntimeStore,
     command_hash,
     proc_executable,
+    proc_cmdline,
     proc_start_ticks,
     record_matches_process,
 )
@@ -156,6 +158,7 @@ class ProcessService:
                     proc_start_ticks=proc_start_ticks(process.pid),
                     executable=proc_executable(process.pid),
                     command_sha256=command_hash(self.config.command),
+                    process_command_sha256=command_hash(proc_cmdline(process.pid)),
                     model_id=self.model_id,
                     launch_mode=self.launch_mode,
                 )
@@ -187,6 +190,19 @@ class ProcessService:
 
         result = wait_until_ready(self.config.health, lambda: process.poll() is None)
         if result.ok:
+            # A script wrapper can exec into an interpreter (e.g. Node.js),
+            # changing /proc/<pid>/cmdline after the initial spawn. Once the
+            # configured health check succeeds, refresh the live identity while
+            # retaining the requested launch-command hash for change detection.
+            try:
+                record = replace(
+                    record,
+                    executable=proc_executable(process.pid),
+                    process_command_sha256=command_hash(proc_cmdline(process.pid)),
+                )
+                self.runtime_store.save_process(record)
+            except (OSError, ValueError, ProcessLookupError):
+                return ServiceStatus(ServiceState.ERROR, "Could not verify process identity after readiness", record.pid)
             return ServiceStatus(ServiceState.READY, result.detail, record.pid)
 
         code = process.poll()

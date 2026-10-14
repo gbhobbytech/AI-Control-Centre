@@ -400,6 +400,39 @@ class ServiceManager:
         model_id: str | None = None,
     ) -> list[tuple[str, ServiceStatus]]:
         requested_order = self._dependency_order([service_id])
+        target = self.config.services[service_id]
+        # A harness/service without its own model should reuse a running model
+        # dependency. Starting a harness must not silently swap the active LLM
+        # because of an unrelated model default.
+        if model_id is None and not (
+            isinstance(target, ProcessServiceConfig) and target.uses_model
+        ):
+            active_models = {
+                self.running_model_id(sid)
+                for sid in requested_order
+                if sid != service_id
+                and isinstance(self.config.services[sid], ProcessServiceConfig)
+                and self.config.services[sid].uses_model
+                and self.get(sid).status().state in {
+                    ServiceState.READY, ServiceState.RUNNING_NOT_READY
+                }
+            }
+            active_models.discard(None)
+            if len(active_models) > 1:
+                raise RuntimeError(
+                    "Dependencies use different running models; select the intended model explicitly."
+                )
+            if active_models:
+                model_id = next(iter(active_models))
+            else:
+                # When no dependency model is running, use the selected Agent
+                # profile's model for its harness rather than the LLM service's
+                # possibly unrelated default model.
+                agent = self.config.profiles.get("agent")
+                if agent is not None and agent.harness is not None:
+                    harness = self.config.harnesses.get(agent.harness)
+                    if harness is not None and service_id in harness.services:
+                        model_id = agent.selected_model
         # Validate model selection/settings before stopping any conflicting workload.
         for sid in requested_order:
             self._controller_for_start(sid, model_id)
