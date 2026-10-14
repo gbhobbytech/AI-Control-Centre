@@ -619,6 +619,11 @@ class ControlCentreWindow(tk.Tk):
         return self.config_data.profiles[profile_id].default_model
 
     def _model_for_service(self, service_id: str) -> str | None:
+        config = self.config_data.services[service_id]
+        # Start on a model-free harness is not a request to change its LLM
+        # dependency. The global override belongs to model-loading tasks.
+        if not isinstance(config, ProcessServiceConfig) or not config.uses_model:
+            return None
         if service_id == self.prompt_config.service:
             helper_model = self._prompt_helper_model_id()
             if helper_model is not None:
