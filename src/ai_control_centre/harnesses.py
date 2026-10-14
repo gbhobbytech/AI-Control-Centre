@@ -17,6 +17,8 @@ _AGENT_HINTS = (
     "browser use",
     "autogen",
     "aider",
+    "deepseek",
+    "dsh",
 )
 
 
