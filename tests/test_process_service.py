@@ -42,3 +42,51 @@ def test_process_service_start_ready_stop(tmp_path: Path):
     stopped = service.stop()
     assert stopped.state == ServiceState.STOPPED
     assert service.status().state == ServiceState.STOPPED
+
+
+def test_script_launcher_retains_ownership_after_restart(tmp_path: Path):
+    """An executable script is interpreted by Python, changing its live argv."""
+    port = _free_port()
+    wrapper = tmp_path / "web-launcher"
+    wrapper.write_text(
+        "#!/usr/bin/env python3\n"
+        "import http.server, sys\n"
+        "server = http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[1])), http.server.SimpleHTTPRequestHandler)\n"
+        "server.serve_forever()\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    config = ProcessServiceConfig(
+        id="script_agent",
+        display_name="Script Agent",
+        executable=wrapper,
+        args=(str(port),),
+        cwd=tmp_path,
+        health=HealthCheckConfig(
+            url=f"http://127.0.0.1:{port}/",
+            startup_timeout=5,
+            retry_interval=0.05,
+            request_timeout=0.2,
+        ),
+        stop_timeout=2,
+    )
+    store = RuntimeStore(tmp_path / "runtime")
+    service = ProcessService(config, store, tmp_path / "logs")
+    try:
+        started = service.start()
+        assert started.state == ServiceState.READY
+        record = store.load_process("script_agent")
+        assert record is not None
+        assert record.process_command_sha256 is not None
+        assert record.process_command_sha256 != record.command_sha256
+        reopened = ProcessService(config, store, tmp_path / "logs")
+        assert reopened.status().state == ServiceState.READY
+        assert reopened.stop().state == ServiceState.STOPPED
+        assert reopened.status().state == ServiceState.STOPPED
+    finally:
+        import os
+        import signal
+        from ai_control_centre.runtime import record_matches_process
+        record = store.load_process("script_agent")
+        if record is not None and record_matches_process(record):
+            os.killpg(record.pgid, signal.SIGTERM)
