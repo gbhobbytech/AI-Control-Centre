@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from ai_control_centre.domain import DockerServiceConfig, HarnessConfig, ProcessServiceConfig
-from ai_control_centre.harnesses import available_custom_harness_services, discover_agent_harnesses
+from ai_control_centre.harnesses import available_custom_harness_services, discover_agent_harnesses, visible_service_ids
 
 
 def test_discovers_configured_computer_service_as_harness():
@@ -71,3 +71,19 @@ def test_discovers_deepseek_harness_process():
     harness = next(iter(found.values()))
     assert harness.services == ("deepseek_harness",)
     assert harness.open_service == "deepseek_harness"
+
+
+def test_visible_service_rows_include_only_selected_harness():
+    services = {
+        "llama": ProcessServiceConfig(id="llama", display_name="LLM"),
+        "computer_dmz": DockerServiceConfig(id="computer_dmz", display_name="Computer DMZ"),
+        "deepseek_harness": ProcessServiceConfig(id="deepseek_harness", display_name="DeepSeek Harness"),
+        "comfyui": ProcessServiceConfig(id="comfyui", display_name="ComfyUI"),
+    }
+    harnesses = {
+        "computer": HarnessConfig(id="computer", display_name="Computer DMZ", services=("computer_dmz",)),
+        "deepseek": HarnessConfig(id="deepseek", display_name="DeepSeek Harness", services=("deepseek_harness",)),
+    }
+    assert visible_service_ids(services, harnesses, "deepseek") == {"llama", "deepseek_harness", "comfyui"}
+    assert visible_service_ids(services, harnesses, "computer") == {"llama", "computer_dmz", "comfyui"}
+    assert visible_service_ids(services, harnesses, None) == {"llama", "comfyui"}
