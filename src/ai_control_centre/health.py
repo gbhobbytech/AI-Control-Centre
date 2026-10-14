@@ -22,7 +22,11 @@ def check_http(config: HealthCheckConfig) -> HealthResult:
             status = response.getcode()
             body = response.read(64 * 1024).decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
-        return HealthResult(False, f"HTTP {exc.code}", exc.code)
+        # A configured authentication challenge can be a valid readiness signal
+        # for a protected local web interface. Other HTTP errors remain failures.
+        if exc.code != config.expected_status or config.body_contains:
+            return HealthResult(False, f"HTTP {exc.code}", exc.code)
+        return HealthResult(True, f"HTTP {exc.code} (authentication required)", exc.code)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return HealthResult(False, f"connection failed: {exc}")
 
