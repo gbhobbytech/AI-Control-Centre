@@ -840,7 +840,7 @@ class ControlCentreWindow(tk.Tk):
         if status.state == ServiceState.STOPPED:
             return state, "Not running"
         if status.state == ServiceState.EXTERNAL:
-            return state, "Running outside AI Control Centre"
+            return "Ready (external)", "Responding; not controlled by AI Control Centre"
         if status.state == ServiceState.RUNNING_NOT_READY:
             if service_id == self.prompt_config.service:
                 model_id = self.manager.running_model_id(service_id)
@@ -1134,7 +1134,7 @@ class ControlCentreWindow(tk.Tk):
                 state_var.set(state)
                 label = self.state_labels.get(service_id)
                 if label is not None:
-                    name = state if state in {'Ready', 'Starting', 'Error', 'Stopped', 'External'} else 'Stopped'
+                    name = 'External' if state == 'Ready (external)' else (state if state in {'Ready', 'Starting', 'Error', 'Stopped', 'External'} else 'Stopped')
                     label.configure(style=name+'.TLabel')
                 detail_var.set(detail)
                 key = state.lower()
