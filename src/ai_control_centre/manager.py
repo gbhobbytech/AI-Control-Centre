@@ -424,6 +424,15 @@ class ServiceManager:
                 )
             if active_models:
                 model_id = next(iter(active_models))
+            else:
+                # When no dependency model is running, use the selected Agent
+                # profile's model for its harness rather than the LLM service's
+                # possibly unrelated default model.
+                agent = self.config.profiles.get("agent")
+                if agent is not None and agent.harness is not None:
+                    harness = self.config.harnesses.get(agent.harness)
+                    if harness is not None and service_id in harness.services:
+                        model_id = agent.selected_model
         # Validate model selection/settings before stopping any conflicting workload.
         for sid in requested_order:
             self._controller_for_start(sid, model_id)
