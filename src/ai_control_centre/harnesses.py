@@ -92,3 +92,15 @@ def available_custom_harness_services(
             continue
         result[service_id] = service
     return result
+
+
+def visible_service_ids(services: Mapping[str, ServiceConfig], harnesses: Mapping[str, HarnessConfig], selected_harness: str | None) -> set[str]:
+    """Keep regular services visible and show only the selected agent harness.
+
+    Service status monitoring continues for all configured services. This helper
+    controls only GUI rows, never lifecycle ownership or conflict detection.
+    """
+    harness_services = {sid for harness in harnesses.values() for sid in harness.services}
+    selected = harnesses.get(selected_harness) if selected_harness else None
+    keep = set(selected.services) if selected else set()
+    return {sid for sid in services if sid not in harness_services or sid in keep}
