@@ -1,31 +1,32 @@
-# Append this section to ~/.config/ai-control-centre/services.toml.
-# Orson example only: adjust the npx path for other machines.
-# Install/cache the pinned package separately before launching from Control Centre.
-# This service will not prompt to install packages.
+# Experimental Orson configuration - append to the user's services.toml.
+# Install once with:
+#   mkdir -p ~/ai/apps/deepseek-harness
+#   npm install --prefix ~/ai/apps/deepseek-harness --save-exact @deepseek-ai/dsh@0.2.0-rc.2
+# Verify: ~/ai/apps/deepseek-harness/node_modules/.bin/dsh --version
+# Do not run a second manually launched instance on port 3080.
 
 [services.deepseek_harness]
 display_name = "DeepSeek Harness"
 type = "process"
-executable = "~/.local/share/pi-node/node-v22.23.2-linux-x64/bin/npx"
+executable = "~/ai/apps/deepseek-harness/node_modules/.bin/dsh"
 cwd = "~/Documents/deepseek-harness/default-workspace"
-args = ["--no-install", "@deepseek-ai/dsh@0.2.0-rc.2", "web", "--no-open", "--host", "127.0.0.1", "--port", "3080"]
+args = ["web", "--no-open", "--host", "127.0.0.1", "--port", "3080"]
 open_url = "http://127.0.0.1:3080"
 dependencies = ["llama"]
 stop_timeout = 10
 log_max_bytes = 2000000
 gpu = false
 
-# Node is installed outside the ordinary system PATH on Orson.
-# Expand the existing PATH rather than replacing it completely.
+# Orson's user-local Node installation may be absent from desktop launcher PATH.
 [services.deepseek_harness.environment]
-PATH = "~/.local/share/pi-node/node-v22.23.2-linux-x64/bin:$PATH"
+PATH = "~/.local/share/pi-node/node-v22.23.2-linux-x64/bin:/usr/local/bin:/usr/bin:/bin"
 
-# Provisional readiness probe; confirm that an unauthenticated GET / returns
-# HTTP 200 on the installed DSH build before enabling this section.
-# If it does not, do not mistake the model API for a DSH health endpoint.
-# [services.deepseek_harness.health]
-# url = "http://127.0.0.1:3080/"
-# expected_status = 200
-# retry_interval = 1.0
-# startup_timeout = 60.0
-# request_timeout = 2.0
+# DeepSeek's unauthenticated root returns HTTP 401 while requiring a token.
+# An expected 401 means the authenticated UI is listening, not that a model
+# or user session is ready. Requires the matching health.py change in this PR.
+[services.deepseek_harness.health]
+url = "http://127.0.0.1:3080/"
+expected_status = 401
+retry_interval = 1.0
+startup_timeout = 60.0
+request_timeout = 2.0
