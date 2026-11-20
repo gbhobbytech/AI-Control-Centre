@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .config import CURRENT_SETUP_SCHEMA, load_app_config, load_models
+from .config import CURRENT_SETUP_SCHEMA, ConfigError, load_app_config, load_models, load_profiles, load_services
 from .domain import HarnessConfig, ModelConfig, SetupState, TASK_IDS
 
 
@@ -338,3 +338,148 @@ def save_window_size(config_dir: Path, width: int, height: int) -> None:
     ui["window_width"] = max(1, int(width))
     ui["window_height"] = max(1, int(height))
     write_toml_atomic(path, data)
+
+
+# --- Targeted service edits (comment-preserving) -------------------------------
+
+_TABLE_HEADER = re.compile(r"^\s*\[(?!\[)\s*(?P<inner>[^\]]+?)\s*\]\s*(?:#.*)?$")
+_ANY_HEADER = re.compile(r"^\s*\[")
+
+
+def _header_parts(inner: str) -> tuple[str, ...]:
+    return tuple(part.strip().strip('"').strip("'") for part in inner.split("."))
+
+
+def update_service_paths(
+    config_dir: Path,
+    service_id: str,
+    *,
+    executable: Path | str | None = None,
+    cwd: Path | str | None = None,
+) -> None:
+    """Change where one process service is installed, after the user confirms it.
+
+    Only the executable and cwd lines of [services.<id>] are rewritten; the
+    rest of services.toml, including comments, stays exactly as it was. The
+    result is validated before it replaces the file.
+    """
+    updates = {key: str(value) for key, value in (("executable", executable), ("cwd", cwd)) if value is not None}
+    if not updates:
+        return
+    path = config_dir / "services.toml"
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+
+    header_index = None
+    for index, line in enumerate(lines):
+        match = _TABLE_HEADER.match(line)
+        if match and _header_parts(match.group("inner")) == ("services", service_id):
+            header_index = index
+            break
+    if header_index is None:
+        raise ValueError(f"services.toml has no [services.{service_id}] table to update")
+    end = next(
+        (index for index in range(header_index + 1, len(lines)) if _ANY_HEADER.match(lines[index])),
+        len(lines),
+    )
+
+    insert_at = header_index + 1
+    for key, value in updates.items():
+        pattern = re.compile(rf"^(?P<indent>\s*)(?P<q>[\"']?){key}(?P=q)\s*=(?P<rest>.*)$")
+        new_line = f"{key} = {_quote(value)}\n"
+        for index in range(header_index + 1, end):
+            match = pattern.match(lines[index].rstrip("\n"))
+            if match:
+                rest = match.group("rest").strip()
+                if rest.startswith(('"""', "'''")):
+                    raise ValueError(f"[services.{service_id}] {key} uses a multi-line string; edit it by hand")
+                lines[index] = match.group("indent") + new_line
+                break
+        else:
+            lines.insert(insert_at, new_line)
+            insert_at += 1
+            end += 1
+
+    def validate(candidate: Path) -> None:
+        services = load_services(candidate)
+        if service_id not in services or not hasattr(services[service_id], "executable"):
+            raise ConfigError(f"[services.{service_id}] is not a process service")
+
+    try:
+        _write_text_atomic(path, "".join(lines), validate)
+    except (ConfigError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError(f"Updating [services.{service_id}] would make services.toml invalid: {exc}") from exc
+
+
+# --- Image environment ---------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ImageSetupResult:
+    service_id: str
+    service_added: bool
+    # Keys where an existing service differs from the selected installation.
+    # The service is not changed; update_service_paths() applies a confirmed choice.
+    service_differences: tuple[str, ...]
+    profile_added: bool
+    environment_enabled: bool
+
+
+def configure_image_environment(
+    config_dir: Path,
+    installation: Any,
+    *,
+    port: int | None = None,
+    service_id: str | None = None,
+    home: Path | None = None,
+) -> ImageSetupResult:
+    """Make the Image environment run the given ComfyUI installation.
+
+    Adds the ComfyUI service from its preset if it does not exist, adds an
+    Image profile if there is none, and turns the Image environment on.
+    Existing services and profiles are never modified.
+    """
+    from .discovery import COMFYUI
+    from .presets import apply_preset, load_preset
+
+    if getattr(installation, "kind", None) != COMFYUI:
+        raise ValueError("configure_image_environment needs a ComfyUI installation")
+    values = installation.preset_values(home)
+    if port is not None:
+        values["port"] = str(port)
+    plan = apply_preset(config_dir, load_preset("comfyui"), values, service_id)
+
+    config = load_app_config(config_dir)
+    profile_added = False
+    if "image" not in config.profiles:
+        def validate(candidate: Path) -> None:
+            load_profiles(candidate, config.services, config.models, config.harnesses)
+
+        append_toml_table(
+            config_dir / "profiles.toml",
+            ("profiles", "image"),
+            {"display_name": "Image", "services": [plan.service_id], "open_service": plan.service_id},
+            comment="Added by AI Control Centre for the Image environment.",
+            validate=validate,
+        )
+        profile_added = True
+
+    settings = config.settings
+    environment_enabled = False
+    if not (settings.environments_explicit and settings.environment_enabled("image")):
+        environments = dict(settings.environments)
+        environments["image"] = True
+        raw = _load_toml(config_dir / "settings.toml")
+        _store_environments(raw, environments)
+        write_toml_atomic(config_dir / "settings.toml", raw)
+        environment_enabled = True
+
+    differences = tuple(
+        key for key in plan.customised_keys if key in {"executable", "cwd"}
+    )
+    return ImageSetupResult(
+        service_id=plan.service_id,
+        service_added=plan.changes_configuration,
+        service_differences=differences,
+        profile_added=profile_added,
+        environment_enabled=environment_enabled,
+    )

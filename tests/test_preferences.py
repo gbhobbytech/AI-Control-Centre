@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import tomllib
 from pathlib import Path
 
 import pytest
 
-from ai_control_centre.config import CURRENT_SETUP_SCHEMA, load_app_config, load_settings
+from ai_control_centre.config import CURRENT_SETUP_SCHEMA, load_app_config, load_services, load_settings
+from ai_control_centre.discovery import validate_comfyui, validate_llama_executable
 from ai_control_centre.domain import SetupState
-from ai_control_centre.preferences import keep_current_setup, save_preferences, write_toml_atomic
+from ai_control_centre.environments import evaluate_profile
+from ai_control_centre.preferences import (
+    configure_image_environment,
+    keep_current_setup,
+    save_preferences,
+    update_service_paths,
+    write_toml_atomic,
+)
 
 
 def _make_config(tmp_path: Path) -> Path:
@@ -282,3 +291,138 @@ def test_keep_current_setup_requires_a_completed_setup(tmp_path: Path):
     with pytest.raises(ValueError, match="run the Setup Wizard"):
         keep_current_setup(config_dir)
     assert _digest(config_dir / "settings.toml") == before
+
+
+# --- v1.3.0 Phase 2: service paths and Image environment -----------------------
+
+_REPO = Path(__file__).resolve().parents[1]
+
+
+def _starter_config(tmp_path: Path) -> Path:
+    target = tmp_path / "config"
+    shutil.copytree(_REPO / "packaging" / "default-config", target)
+    return target
+
+
+def _fake_comfyui(root: Path) -> Path:
+    (root / "comfy").mkdir(parents=True)
+    (root / "main.py").write_text("# ComfyUI\n", encoding="utf-8")
+    python = root / "venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\n", encoding="utf-8")
+    python.chmod(0o755)
+    (root / "venv" / "lib" / "python3.12" / "site-packages" / "torch").mkdir(parents=True)
+    return root
+
+
+def test_update_service_paths_changes_only_those_lines(tmp_path: Path):
+    config_dir = _starter_config(tmp_path)
+    services = config_dir / "services.toml"
+    before = services.read_text(encoding="utf-8").splitlines()
+
+    update_service_paths(
+        config_dir, "llama",
+        executable="~/opt/llama.cpp/build/bin/llama-server", cwd="~/opt/llama.cpp",
+    )
+
+    after = services.read_text(encoding="utf-8").splitlines()
+    changed = [(old, new) for old, new in zip(before, after) if old != new]
+    assert len(before) == len(after)
+    assert changed == [
+        ('executable = "~/ai/apps/llama.cpp/build/bin/llama-server"',
+         'executable = "~/opt/llama.cpp/build/bin/llama-server"'),
+        ('cwd = "~/ai/apps/llama.cpp"', 'cwd = "~/opt/llama.cpp"'),
+    ]
+    assert after[0].startswith("#")  # comments kept
+    llama = load_app_config(config_dir).services["llama"]
+    assert llama.executable == Path("~/opt/llama.cpp/build/bin/llama-server").expanduser()
+
+
+def test_update_service_paths_handles_quoted_headers_and_missing_keys(tmp_path: Path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    services = config_dir / "services.toml"
+    services.write_text(
+        '# hand written\n["services"."web"]\n"display_name" = "Web"\ntype = "process"\n'
+        'executable = "/bin/true"\n\n[services.web.health]\nurl = "http://127.0.0.1:1/"\n',
+        encoding="utf-8",
+    )
+    update_service_paths(config_dir, "web", cwd="/srv/web")
+    text = services.read_text(encoding="utf-8")
+    assert '["services"."web"]\ncwd = "/srv/web"\n' in text
+    assert load_services(services)["web"].cwd == Path("/srv/web")
+
+
+def test_update_service_paths_rejects_unknown_or_non_process_services(tmp_path: Path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    services = config_dir / "services.toml"
+    services.write_text(
+        '[services.box]\ndisplay_name = "Box"\ntype = "docker"\ncontainer_name = "box"\n', encoding="utf-8"
+    )
+    before = services.read_bytes()
+    with pytest.raises(ValueError, match=r"no \[services\.missing\] table"):
+        update_service_paths(config_dir, "missing", executable="/bin/true")
+    with pytest.raises(ValueError, match="would make services.toml invalid"):
+        update_service_paths(config_dir, "box", executable="/bin/true")
+    assert services.read_bytes() == before
+
+
+def test_configure_image_environment_on_fresh_install(tmp_path: Path):
+    config_dir = _starter_config(tmp_path)
+    comfy = validate_comfyui(_fake_comfyui(tmp_path / "apps" / "ComfyUI"))
+
+    result = configure_image_environment(config_dir, comfy, home=tmp_path / "elsewhere")
+
+    assert result.service_added and result.profile_added and result.environment_enabled
+    assert result.service_differences == ()
+    config = load_app_config(config_dir)
+    service = config.services["comfyui"]
+    assert service.executable == tmp_path / "apps/ComfyUI/venv/bin/python"
+    assert service.cwd == tmp_path / "apps/ComfyUI"
+    assert config.profiles["image"].services == ("comfyui",)
+    assert config.profiles["image"].open_service == "comfyui"
+    assert config.settings.environment_enabled("image")
+    # Other environments keep what they were before (inferred from profiles).
+    assert config.settings.environments["chat"] is True
+    assert evaluate_profile(config, "image").available
+
+
+def test_configure_image_environment_is_repeatable(tmp_path: Path):
+    config_dir = _starter_config(tmp_path)
+    comfy = validate_comfyui(_fake_comfyui(tmp_path / "apps" / "ComfyUI"))
+    configure_image_environment(config_dir, comfy, home=tmp_path / "elsewhere")
+    digests = {p.name: p.read_bytes() for p in config_dir.glob("*.toml")}
+
+    again = configure_image_environment(config_dir, comfy, home=tmp_path / "elsewhere")
+
+    assert not (again.service_added or again.profile_added or again.environment_enabled)
+    assert {p.name: p.read_bytes() for p in config_dir.glob("*.toml")} == digests
+
+
+def test_configure_image_environment_keeps_existing_comfyui_and_reports_difference(tmp_path: Path):
+    config_dir = tmp_path / "config"
+    shutil.copytree(_REPO / "examples" / "reference", config_dir)
+    services_before = (config_dir / "services.toml").read_bytes()
+    comfy = validate_comfyui(_fake_comfyui(tmp_path / "ComfyUI"))
+
+    result = configure_image_environment(config_dir, comfy, home=tmp_path / "elsewhere")
+
+    assert not result.service_added and not result.profile_added
+    assert set(result.service_differences) == {"executable", "cwd"}
+    assert (config_dir / "services.toml").read_bytes() == services_before
+
+    # After the user confirms the new installation:
+    update_service_paths(config_dir, result.service_id, executable=comfy.executable, cwd=comfy.cwd)
+    service = load_app_config(config_dir).services["comfyui"]
+    assert (service.executable, service.cwd) == (comfy.executable, comfy.cwd)
+
+
+def test_configure_image_environment_rejects_unusable_installation(tmp_path: Path):
+    config_dir = _starter_config(tmp_path)
+    before = {p.name: p.read_bytes() for p in config_dir.glob("*.toml")}
+    with pytest.raises(ValueError, match="cannot be used"):
+        configure_image_environment(config_dir, validate_comfyui(tmp_path / "missing"))
+    with pytest.raises(ValueError, match="needs a ComfyUI installation"):
+        configure_image_environment(config_dir, validate_llama_executable(tmp_path / "x"))
+    assert {p.name: p.read_bytes() for p in config_dir.glob("*.toml")} == before
