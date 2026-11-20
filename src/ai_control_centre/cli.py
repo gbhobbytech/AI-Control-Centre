@@ -66,6 +66,48 @@ def _show_model(config, model_id: str) -> None:
         print(f"notes: {model.notes}")
 
 
+def format_discovery(report, home: Path | None = None) -> list[str]:
+    from .discovery import portable_path
+
+    def show(path) -> str:
+        return portable_path(path, home) if path is not None else "-"
+
+    lines: list[str] = []
+    for title, items, empty in (
+        ("llama.cpp (llama-server)", report.llama_cpp, "No llama-server found."),
+        ("ComfyUI", report.comfyui, "No ComfyUI installation found."),
+    ):
+        lines.append(title)
+        if not items:
+            lines.append(f"  {empty}")
+        for item in items:
+            marker = "*" if item.recommended else " "
+            state = "OK" if item.usable else "PROBLEM"
+            lines.append(f" {marker} {show(item.path)}  [{state}, {item.source}]")
+            if item.kind == "comfyui" and item.executable is not None:
+                lines.append(f"      python: {show(item.executable)}")
+            for problem in item.problems:
+                lines.append(f"      problem: {problem}")
+            for note in item.notes:
+                lines.append(f"      note: {note}")
+        lines.append("")
+    lines.append("* = recommended. Discovery only inspects files; nothing was started or changed.")
+    return lines
+
+
+def _discover(config_dir: Path) -> int:
+    from .discovery import discover_installations
+
+    services = {}
+    try:
+        services = load_app_config(config_dir).services
+    except (ConfigError, OSError, ValueError) as exc:
+        print(f"Note: current configuration not loaded ({exc}); searching common locations only.\n")
+    for line in format_discovery(discover_installations(services)):
+        print(line)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI Control Centre CLI")
     parser.add_argument(
@@ -126,6 +168,10 @@ def build_parser() -> argparse.ArgumentParser:
     show = model_sub.add_parser("show", help="Show one model")
     show.add_argument("model")
 
+    sub.add_parser(
+        "discover",
+        help="List llama.cpp and ComfyUI installations found on this machine (changes nothing)",
+    )
     sub.add_parser("stop-all", help="Stop launcher-owned services in reverse dependency order")
     sub.add_parser("gpu", help="Show current GPU status")
     sub.add_parser("gui", help="Open the graphical control centre")
@@ -137,6 +183,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "discover":
+        return _discover(args.config_dir.expanduser())
 
     try:
         config = load_app_config(args.config_dir.expanduser())

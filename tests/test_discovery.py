@@ -245,3 +245,25 @@ def test_portable_path(tmp_path: Path):
     assert portable_path(tmp_path / "ComfyUI", tmp_path) == "~/ComfyUI"
     assert portable_path(tmp_path, tmp_path) == "~"
     assert portable_path(Path("/opt/ComfyUI"), tmp_path) == "/opt/ComfyUI"
+
+
+def test_discover_command_output(tmp_path: Path):
+    from ai_control_centre.cli import format_discovery
+
+    _orson_mini(tmp_path)
+    (tmp_path / "ComfyUI" / "venv" / "lib" / "python3.12" / "site-packages" / "torch").rmdir()
+    report = discover_installations(home=tmp_path, path_env="")
+    text = "\n".join(format_discovery(report, tmp_path))
+    assert " * ~/ai/apps/llama.cpp/build/bin/llama-server  [OK, common location]" in text
+    assert "   ~/ComfyUI  [PROBLEM, common location]" in text
+    assert "No Python environment with torch was found" in text
+    assert "nothing was started or changed" in text
+
+
+def test_discover_command_runs_without_configuration(tmp_path: Path, capsys):
+    from ai_control_centre.cli import main
+
+    assert main(["--config-dir", str(tmp_path / "missing"), "discover"]) == 0
+    out = capsys.readouterr().out
+    assert "current configuration not loaded" in out
+    assert "llama.cpp (llama-server)" in out and "ComfyUI" in out
