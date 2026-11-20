@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
@@ -53,3 +55,26 @@ def wait_until_ready(config: HealthCheckConfig, process_is_alive) -> HealthResul
         time.sleep(config.retry_interval)
 
     return HealthResult(False, f"startup timeout; last health result: {last.detail}")
+
+
+def url_endpoint(url: str) -> tuple[str, int] | None:
+    """Host and port an HTTP(S) URL connects to, or None if it has no host."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    return parsed.hostname, port
+
+
+def port_accepts_connections(host: str, port: int, timeout: float = 0.5) -> bool:
+    """True when something is listening on host:port."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False

@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .domain import ProcessServiceConfig, ServiceState
-from .health import HealthResult, check_http, wait_until_ready
+from .health import HealthResult, check_http, port_accepts_connections, url_endpoint, wait_until_ready
 from .runtime import (
     ProcessRecord,
     RuntimeStore,
@@ -83,6 +83,27 @@ class ProcessService:
 
         return ServiceStatus(ServiceState.STOPPED, health.detail if health else "no launcher-owned process")
 
+    def _refuse_if_port_taken(self, current: ServiceStatus) -> None:
+        """Do not start a second copy when the health port is already in use.
+
+        The health check has already failed at this point (the service is not
+        READY or EXTERNAL), so whatever is listening is either another program
+        or another copy of this service that is not ready yet. Starting now
+        would only fail to bind the port, or duplicate a GPU workload.
+        """
+        if self.config.health is None:
+            return
+        endpoint = url_endpoint(self.config.health.url)
+        if endpoint is None or not port_accepts_connections(*endpoint):
+            return
+        host, port = endpoint
+        raise RuntimeError(
+            f"Port {port} on {host} is already in use, so {self.config.display_name} was not started. "
+            f"Another program, or a copy of {self.config.display_name} that was started outside "
+            "AI Control Centre and is not ready yet, is using it "
+            f"(health check: {current.detail}). Stop that program or choose a different port."
+        )
+
     def _rotate_log_if_needed(self) -> None:
         path = self.log_path
         if not path.exists() or path.stat().st_size <= self.config.log_max_bytes:
@@ -122,6 +143,7 @@ class ProcessService:
             raise FileNotFoundError(f"Executable not found: {self.config.executable}")
         if not self.config.cwd.is_dir():
             raise FileNotFoundError(f"Working directory not found: {self.config.cwd}")
+        self._refuse_if_port_taken(current)
 
         self._rotate_log_if_needed()
         env = os.environ.copy()

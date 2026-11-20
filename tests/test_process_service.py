@@ -4,6 +4,8 @@ import socket
 import sys
 from pathlib import Path
 
+import pytest
+
 from ai_control_centre.domain import HealthCheckConfig, ProcessServiceConfig, ServiceState
 from ai_control_centre.process_service import ProcessService
 from ai_control_centre.runtime import RuntimeStore
@@ -90,3 +92,33 @@ def test_script_launcher_retains_ownership_after_restart(tmp_path: Path):
         record = store.load_process("script_agent")
         if record is not None and record_matches_process(record):
             os.killpg(record.pgid, signal.SIGTERM)
+
+
+def test_busy_port_is_refused_without_starting_a_duplicate(tmp_path: Path):
+    """Another program holds the port and does not pass this health check."""
+    port = _free_port()
+    blocker = socket.socket()
+    blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    blocker.bind(("127.0.0.1", port))
+    blocker.listen()
+    marker = tmp_path / "started"
+    config = ProcessServiceConfig(
+        id="dummy",
+        display_name="Dummy HTTP",
+        executable=Path(sys.executable),
+        args=("-c", f"open({str(marker)!r}, 'w').close()"),
+        cwd=tmp_path,
+        health=HealthCheckConfig(
+            url=f"http://127.0.0.1:{port}/", startup_timeout=1, retry_interval=0.05, request_timeout=0.2,
+        ),
+    )
+    store = RuntimeStore(tmp_path / "runtime")
+    service = ProcessService(config, store, tmp_path / "logs")
+    try:
+        assert service.status().state == ServiceState.STOPPED
+        with pytest.raises(RuntimeError, match=rf"Port {port} on 127\.0\.0\.1 is already in use, so Dummy HTTP was not started"):
+            service.start()
+        assert not marker.exists()
+        assert store.load_process("dummy") is None
+    finally:
+        blocker.close()
