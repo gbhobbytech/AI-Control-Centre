@@ -15,7 +15,8 @@ except ImportError as exc:  # pragma: no cover - depends on host packaging
     ) from exc
 
 from .config import ConfigError, load_app_config
-from .domain import ProcessServiceConfig, ServiceState
+from .environments import evaluate_profile
+from .domain import ProcessServiceConfig, ServiceState, TASK_IDS
 from .manager import ServiceManager
 from .harnesses import visible_service_ids
 from .models import smallest_complete_model
@@ -36,7 +37,7 @@ _STATE_LABELS = {
     ServiceState.UNKNOWN: "Unknown",
 }
 
-_TASK_IDS = ("coding", "chat", "agent", "image")
+_TASK_IDS = TASK_IDS
 _TASK_DEFAULT = "Task default"
 
 
@@ -532,29 +533,8 @@ class ControlCentreWindow(tk.Tk):
             self.status_var.set(f"Model rescan complete - {len(after)} model(s) available")
 
     def _task_capability(self, profile_id: str) -> tuple[bool, str]:
-        profile = self.config_data.profiles.get(profile_id)
-        if profile is None:
-            return False, f"{profile_id.title()} is not configured."
-        for service_id in profile.services:
-            if service_id not in self.config_data.services:
-                return False, f"Required service '{service_id}' is not configured."
-        if profile_id in {"coding", "chat", "agent"}:
-            model_id = profile.default_model
-            model = self.config_data.models.get(model_id) if model_id else None
-            if model is None or not model.complete:
-                return False, f"{profile.display_name} needs a complete default model."
-            if not model.tuning_reviewed:
-                return False, f"{model.display_name} needs launch configuration."
-        if profile_id == "agent":
-            if not profile.harness:
-                return False, "Agent unavailable - no Agent harness is configured."
-            harness = self.config_data.harnesses.get(profile.harness)
-            if harness is None:
-                return False, "Agent unavailable - the selected harness is missing."
-            missing = [sid for sid in harness.services if sid not in self.config_data.services]
-            if missing:
-                return False, "Agent harness has missing service(s): " + ", ".join(missing)
-        return True, "Ready"
+        status = evaluate_profile(self.config_data, profile_id)
+        return status.available, status.reason
 
     def _prompt_helper_capability(self) -> tuple[bool, str]:
         prompt = self.prompt_config

@@ -1,7 +1,9 @@
+import hashlib
+import shutil
 from pathlib import Path
 
 from ai_control_centre.config import CURRENT_SETUP_SCHEMA, load_app_config, load_models, load_settings
-from ai_control_centre.domain import HarnessConfig, ModelConfig
+from ai_control_centre.domain import HarnessConfig, ModelConfig, SetupState
 from ai_control_centre.preferences import save_model_tuning, write_toml_atomic
 from ai_control_centre.tuning import BASELINE, CURRENT_TUNING_SCHEMA
 
@@ -208,11 +210,6 @@ def test_v1_agent_harness_ignores_stale_profile_open_service(tmp_path: Path):
 
 
 # --- v1.2 -> v1.3 upgrade -------------------------------------------------------
-
-import hashlib
-import shutil
-
-from ai_control_centre.domain import SetupState
 
 
 def _v12_completed_config(tmp_path: Path) -> Path:
