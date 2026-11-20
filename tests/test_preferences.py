@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import tomllib
 from pathlib import Path
 
+import pytest
+
 from ai_control_centre.config import CURRENT_SETUP_SCHEMA, load_app_config, load_settings
-from ai_control_centre.preferences import save_preferences, write_toml_atomic
+from ai_control_centre.domain import SetupState
+from ai_control_centre.preferences import keep_current_setup, save_preferences, write_toml_atomic
 
 
 def _make_config(tmp_path: Path) -> Path:
@@ -160,3 +165,120 @@ def test_saving_agent_as_unconfigured_removes_legacy_runtime_services(tmp_path: 
     assert loaded.profiles["agent"].default_model is None
     assert loaded.harnesses == {}
     assert loaded.settings.prompt_workshop.enabled is False
+
+
+# --- v1.3.0 environment persistence --------------------------------------------
+
+
+def _save(config_dir: Path, tmp_path: Path, **extra) -> None:
+    save_preferences(
+        config_dir,
+        model_roots=(tmp_path / "models",),
+        task_models={"coding": "large", "chat": "small", "agent": "small"},
+        agent_harness=None,
+        agent_base_services=("llama",),
+        harnesses={},
+        prompt_model=None,
+        prompt_enabled=False,
+        prompt_auto_lightest=True,
+        prompt_processing_mode="cpu",
+        prompt_keep_loaded=False,
+        prompt_gpu_layers=None,
+        prompt_context_length=4096,
+        prompt_port=8081,
+        prompt_startup_timeout=60,
+        prompt_cache_type_k="q8_0",
+        prompt_cache_type_v="q8_0",
+        **extra,
+    )
+
+
+def _settings_raw(config_dir: Path) -> dict:
+    with (config_dir / "settings.toml").open("rb") as fh:
+        return tomllib.load(fh)
+
+
+def test_environment_selections_round_trip(tmp_path: Path):
+    config_dir = _make_config(tmp_path)
+    selection = {"coding": False, "chat": True, "agent": False, "image": True}
+    _save(config_dir, tmp_path, environments=selection)
+    settings = load_app_config(config_dir).settings
+    assert settings.environments_explicit is True
+    assert dict(settings.environments) == selection
+    assert settings.setup_state == SetupState.COMPLETE
+
+
+def test_saving_without_environments_leaves_existing_selection(tmp_path: Path):
+    config_dir = _make_config(tmp_path)
+    _save(config_dir, tmp_path, environments={"chat": True, "image": True})
+    raw = _settings_raw(config_dir)
+    raw["environments"]["future_task"] = True
+    write_toml_atomic(config_dir / "settings.toml", raw)
+
+    _save(config_dir, tmp_path)
+    environments = _settings_raw(config_dir)["environments"]
+    assert environments == {
+        "coding": False, "chat": True, "agent": False, "image": True, "future_task": True,
+    }
+
+
+def test_invalid_environment_selection_is_rejected_before_writing(tmp_path: Path):
+    config_dir = _make_config(tmp_path)
+    before = (config_dir / "settings.toml").read_bytes()
+    with pytest.raises(ValueError, match="Unknown environment"):
+        _save(config_dir, tmp_path, environments={"audio": True})
+    assert (config_dir / "settings.toml").read_bytes() == before
+
+
+def _mark_v12_completed(config_dir: Path) -> None:
+    raw = _settings_raw(config_dir)
+    raw["setup"] = {"completed": True, "schema_version": 2}
+    write_toml_atomic(config_dir / "settings.toml", raw)
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_keep_current_setup_changes_only_environments_and_schema(tmp_path: Path):
+    config_dir = _make_config(tmp_path)
+    _mark_v12_completed(config_dir)
+    before_settings = _settings_raw(config_dir)
+    other_files = {
+        name: _digest(config_dir / name) for name in ("services.toml", "profiles.toml", "models.toml")
+    }
+    before = load_app_config(config_dir)
+    assert before.settings.setup_state == SetupState.UPGRADE_REVIEW
+
+    kept = keep_current_setup(config_dir)
+
+    assert kept == {"coding": True, "chat": True, "agent": True, "image": True}
+    after_settings = _settings_raw(config_dir)
+    assert after_settings.pop("environments") == kept
+    assert after_settings.pop("setup") == {"completed": True, "schema_version": CURRENT_SETUP_SCHEMA}
+    before_settings.pop("setup")
+    assert after_settings == before_settings
+    assert {name: _digest(config_dir / name) for name in other_files} == other_files
+
+    after = load_app_config(config_dir)
+    assert after.settings.setup_state == SetupState.COMPLETE
+    assert after.profiles == before.profiles
+    assert after.models == before.models
+    assert after.services == before.services
+
+
+def test_keep_current_setup_is_repeatable(tmp_path: Path):
+    config_dir = _make_config(tmp_path)
+    _mark_v12_completed(config_dir)
+    keep_current_setup(config_dir)
+    once = _digest(config_dir / "settings.toml")
+    keep_current_setup(config_dir)
+    assert _digest(config_dir / "settings.toml") == once
+
+
+def test_keep_current_setup_requires_a_completed_setup(tmp_path: Path):
+    config_dir = _make_config(tmp_path)
+    before = _digest(config_dir / "settings.toml")
+    with pytest.raises(ValueError, match="run the Setup Wizard"):
+        keep_current_setup(config_dir)
+    assert _digest(config_dir / "settings.toml") == before

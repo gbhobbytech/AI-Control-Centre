@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .config import CURRENT_SETUP_SCHEMA, load_models
-from .domain import HarnessConfig, ModelConfig
+from .config import CURRENT_SETUP_SCHEMA, load_app_config, load_models
+from .domain import HarnessConfig, ModelConfig, SetupState, TASK_IDS
 
 
 @dataclass(frozen=True)
@@ -191,6 +191,7 @@ def save_preferences(
     prompt_cache_type_k: str,
     prompt_cache_type_v: str,
     setup_completed: bool = True,
+    environments: Mapping[str, bool] | None = None,
 ) -> None:
     settings_path = config_dir / "settings.toml"
     profiles_path = config_dir / "profiles.toml"
@@ -204,6 +205,8 @@ def save_preferences(
         "completed": bool(setup_completed),
         "schema_version": CURRENT_SETUP_SCHEMA,
     }
+    if environments is not None:
+        _store_environments(settings, environments)
 
     prompt = settings.setdefault("prompt_workshop", {})
     prompt["enabled"] = bool(prompt_enabled)
@@ -258,6 +261,49 @@ def save_preferences(
 
     write_toml_atomic(settings_path, settings)
     write_toml_atomic(profiles_path, profiles)
+
+
+def _store_environments(settings: dict[str, Any], environments: Mapping[str, bool]) -> None:
+    """Write every task's selection; keep keys this version does not know."""
+    unknown = sorted(set(environments) - set(TASK_IDS))
+    if unknown:
+        raise ValueError(f"Unknown environment(s): {', '.join(unknown)}")
+    for task_id, value in environments.items():
+        if not isinstance(value, bool):
+            raise ValueError(f"Environment '{task_id}' must be True or False")
+    table = settings.get("environments")
+    table = dict(table) if isinstance(table, dict) else {}
+    for task_id in TASK_IDS:
+        table[task_id] = bool(environments.get(task_id, False))
+    settings["environments"] = table
+
+
+def keep_current_setup(config_dir: Path) -> dict[str, bool]:
+    """Accept an earlier completed setup as-is under the current setup schema.
+
+    Records the environments the user already has (as inferred from their
+    profiles) and the current schema version in settings.toml. Nothing else
+    in any configuration file is changed. Calling it again changes nothing.
+    """
+    config = load_app_config(config_dir)
+    current = config.settings
+    if current.setup_state == SetupState.INCOMPLETE:
+        raise ValueError("Setup has not been completed yet; run the Setup Wizard instead.")
+    environments = dict(current.environments)
+    if current.setup_state == SetupState.COMPLETE and current.environments_explicit:
+        return environments
+
+    path = config_dir / "settings.toml"
+    settings = _load_toml(path)
+    if not current.environments_explicit:
+        _store_environments(settings, environments)
+    setup = settings.get("setup")
+    setup = dict(setup) if isinstance(setup, dict) else {}
+    setup["completed"] = True
+    setup["schema_version"] = CURRENT_SETUP_SCHEMA
+    settings["setup"] = setup
+    write_toml_atomic(path, settings)
+    return environments
 
 
 def save_model_tuning(config_dir: Path, model: ModelConfig, values: Mapping, source: str = "manual") -> None:
