@@ -1,0 +1,48 @@
+# Reusable ComfyUI service preset for the Image environment.
+#
+# {preset.NAME} values are filled in when the preset is applied (for example
+# from installation discovery).
+
+[preset]
+id = "comfyui"
+display_name = "ComfyUI"
+description = "ComfyUI web interface for the Image environment."
+version = 1
+service_id = "comfyui"
+
+[preset.variables.install_dir]
+description = "ComfyUI installation folder (contains main.py)"
+kind = "path"
+
+[preset.variables.python]
+description = "Python interpreter of the ComfyUI environment"
+kind = "path"
+
+[preset.variables.host]
+description = "Address ComfyUI listens on"
+default = "127.0.0.1"
+
+[preset.variables.port]
+description = "Port ComfyUI listens on"
+kind = "port"
+default = "8188"
+
+[service]
+display_name = "ComfyUI"
+type = "process"
+executable = "{preset.python}"
+cwd = "{preset.install_dir}"
+args = ["main.py", "--listen", "{preset.host}", "--port", "{preset.port}"]
+open_url = "http://127.0.0.1:{preset.port}"
+stop_timeout = 10
+log_max_bytes = 2000000
+gpu = true
+conflict_groups = ["large-gpu-workload"]
+
+[service.health]
+url = "http://127.0.0.1:{preset.port}/system_stats"
+expected_status = 200
+body_contains = "comfyui_version"
+retry_interval = 1.0
+startup_timeout = 120.0
+request_timeout = 2.0

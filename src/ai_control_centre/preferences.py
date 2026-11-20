@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .config import CURRENT_SETUP_SCHEMA, load_models
 from .domain import HarnessConfig, ModelConfig
@@ -64,38 +65,106 @@ def _scalar(value: Any) -> str:
     raise TypeError(f"Unsupported TOML value: {type(value).__name__}")
 
 
-def _emit_table(lines: list[str], prefix: tuple[str, ...], table: Mapping[str, Any]) -> None:
+_BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _key(part: str, bare: bool) -> str:
+    return part if bare and _BARE_KEY.match(part) else _quote(part)
+
+
+def _emit_table(
+    lines: list[str],
+    prefix: tuple[str, ...],
+    table: Mapping[str, Any],
+    bare_keys: bool = False,
+) -> None:
     scalar_items = [(key, value) for key, value in table.items() if not isinstance(value, dict)]
     child_items = [(key, value) for key, value in table.items() if isinstance(value, dict)]
     if prefix:
-        lines.append(f"[{'.'.join(_quote(part) for part in prefix)}]")
+        lines.append(f"[{'.'.join(_key(part, bare_keys) for part in prefix)}]")
     for key, value in scalar_items:
         if value is None:
             continue
-        lines.append(f"{_quote(key)} = {_scalar(value)}")
+        lines.append(f"{_key(key, bare_keys)} = {_scalar(value)}")
     if prefix and (scalar_items or child_items):
         lines.append("")
     for key, child in child_items:
-        _emit_table(lines, (*prefix, key), child)
+        _emit_table(lines, (*prefix, key), child, bare_keys)
 
 
-def write_toml_atomic(path: Path, data: Mapping[str, Any]) -> None:
+def _write_text_atomic(
+    path: Path, text: str, validate: Callable[[Path], object] | None = None
+) -> None:
+    """Write text via a temporary file; validate it before it replaces path."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines: list[str] = []
-    _emit_table(lines, (), data)
-    text = "\n".join(lines).rstrip() + "\n"
     fd, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
+        if validate is not None:
+            validate(Path(name))
         os.replace(name, path)
     finally:
         try:
             os.unlink(name)
         except FileNotFoundError:
             pass
+
+
+def write_toml_atomic(path: Path, data: Mapping[str, Any]) -> None:
+    lines: list[str] = []
+    _emit_table(lines, (), data)
+    text = "\n".join(lines).rstrip() + "\n"
+    _write_text_atomic(path, text)
+
+
+def toml_table_text(prefix: tuple[str, ...], table: Mapping[str, Any]) -> str:
+    """Hand-editable TOML text for one table (bare keys where valid)."""
+    lines: list[str] = []
+    _emit_table(lines, prefix, table, bare_keys=True)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def append_toml_table(
+    path: Path,
+    prefix: tuple[str, ...],
+    table: Mapping[str, Any],
+    *,
+    comment: str | None = None,
+    validate: Callable[[Path], object] | None = None,
+) -> None:
+    """Add a new table to the end of a TOML file, keeping existing text as-is.
+
+    Unlike write_toml_atomic this preserves the user's comments and layout.
+    The table must not already exist. validate, if given, receives the path of
+    the complete candidate file and may raise to abort the change.
+    """
+    original = path.read_text(encoding="utf-8") if path.exists() else ""
+    existing: Any = tomllib.loads(original) if original else {}
+    for part in prefix:
+        if not isinstance(existing, dict):
+            break
+        existing = existing.get(part)
+    else:
+        if existing is not None:
+            raise ValueError(f"{path.name} already contains [{'.'.join(prefix)}]")
+
+    block = toml_table_text(prefix, table)
+    if comment:
+        block = "".join(f"# {line}".rstrip() + "\n" for line in comment.splitlines()) + block
+    if not original:
+        separator = ""
+    elif original.endswith("\n\n"):
+        separator = ""
+    elif original.endswith("\n"):
+        separator = "\n"
+    else:
+        separator = "\n\n"
+    text = original + separator + block
+    tomllib.loads(text)
+    _write_text_atomic(path, text, validate)
 
 
 def rescan_models(config_dir: Path, roots: tuple[Path, ...]) -> dict[str, ModelConfig]:

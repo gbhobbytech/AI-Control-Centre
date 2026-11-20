@@ -1,0 +1,67 @@
+# Reusable llama.cpp server service preset.
+#
+# {preset.NAME} values are filled in when the preset is applied (for example
+# from installation discovery). {model.NAME} placeholders are left untouched:
+# they are filled in for the selected model each time the service starts.
+
+[preset]
+id = "llama-cpp"
+display_name = "llama.cpp server"
+description = "Main llama.cpp server for the Coding, Chat and Agent environments."
+version = 1
+service_id = "llama"
+
+[preset.variables.executable]
+description = "Path to the llama-server executable"
+kind = "path"
+
+[preset.variables.cwd]
+description = "Working directory for llama-server"
+kind = "path"
+
+[preset.variables.host]
+description = "Address llama-server listens on"
+default = "127.0.0.1"
+
+[preset.variables.port]
+description = "Port llama-server listens on"
+kind = "port"
+default = "8080"
+
+[service]
+display_name = "llama.cpp"
+type = "process"
+executable = "{preset.executable}"
+cwd = "{preset.cwd}"
+args = [
+  "-m", "{model.path}",
+  "-ngl", "{model.recommended_gpu_layers}",
+  "--ctx-size", "{model.recommended_context_length}",
+  "--n-predict", "{model.max_output_tokens}",
+  "--cache-type-k", "{model.cache_type_k}",
+  "--cache-type-v", "{model.cache_type_v}",
+  "--flash-attn", "{model.flash_attention}",
+  "--temp", "0.2",
+  "--host", "{preset.host}",
+  "--port", "{preset.port}",
+]
+open_url = "http://127.0.0.1:{preset.port}"
+stop_timeout = 10
+log_max_bytes = 2000000
+gpu = true
+conflict_groups = ["large-gpu-workload"]
+
+[service.model_defaults]
+max_output_tokens = 2048
+flash_attention = "auto"
+recommended_gpu_layers = 0
+recommended_context_length = 4096
+cache_type_k = "f16"
+cache_type_v = "f16"
+
+[service.health]
+url = "http://127.0.0.1:{preset.port}/health"
+expected_status = 200
+retry_interval = 1.0
+startup_timeout = 120.0
+request_timeout = 2.0
