@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ai_control_centre.config import ConfigError, load_app_config, load_settings
+from ai_control_centre.config import CURRENT_SETUP_SCHEMA, ConfigError, load_app_config, load_settings
 from ai_control_centre.domain import DockerServiceConfig, ProcessServiceConfig
 from ai_control_centre.preferences import write_toml_atomic
 
@@ -168,4 +168,143 @@ def test_completed_setup_rejects_model_service_with_no_models(
     write_toml_atomic(target / "settings.toml", settings)
 
     with pytest.raises(ConfigError, match="no models are configured or discovered"):
+        load_app_config(target)
+
+
+# --- v1.3.0 task environments -------------------------------------------------
+
+def _reference_copy(tmp_path: Path) -> Path:
+    source = Path(__file__).resolve().parents[1] / "examples" / "reference"
+    target = tmp_path / "config"
+    shutil.copytree(source, target)
+    return target
+
+
+def _edit_toml(path: Path, edit) -> None:
+    with path.open("rb") as fh:
+        data = tomllib.load(fh)
+    edit(data)
+    write_toml_atomic(path, data)
+
+
+def _image_only_config(tmp_path: Path) -> Path:
+    """Reference layout on a machine with no GGUF models at all."""
+    target = _reference_copy(tmp_path)
+    empty_root = tmp_path / "no-models"
+    empty_root.mkdir()
+    (target / "models.toml").unlink()
+
+    def settings(data):
+        data["model_roots"] = {"llm": [str(empty_root)]}
+        data["setup"] = {"completed": True, "schema_version": CURRENT_SETUP_SCHEMA}
+        data["prompt_workshop"]["enabled"] = False
+        data["environments"] = {"coding": False, "chat": False, "agent": False, "image": True}
+
+    def services(data):
+        data["services"]["llama"].pop("default_model", None)
+
+    _edit_toml(target / "settings.toml", settings)
+    _edit_toml(target / "services.toml", services)
+    return target
+
+
+def test_image_only_configuration_loads_without_gguf_model(tmp_path: Path):
+    config = load_app_config(_image_only_config(tmp_path))
+    assert config.models == {}
+    assert config.settings.setup_completed is True
+    assert config.settings.environments_explicit is True
+    assert dict(config.settings.environments) == {
+        "coding": False, "chat": False, "agent": False, "image": True,
+    }
+    assert config.profiles["image"].services == ("comfyui",)
+
+
+def test_enabling_a_model_environment_without_models_explains_the_problem(tmp_path: Path):
+    target = _image_only_config(tmp_path)
+    _edit_toml(target / "settings.toml", lambda d: d["environments"].update(chat=True))
+    with pytest.raises(ConfigError, match="no models are configured or discovered") as info:
+        load_app_config(target)
+    assert "turn off the environments" in str(info.value)
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        {"coding": False, "chat": True, "agent": False, "image": False},
+        {"coding": True, "chat": False, "agent": False, "image": False},
+        {"coding": False, "chat": False, "agent": False, "image": False},
+    ],
+)
+def test_coding_and_chat_can_be_disabled_independently(tmp_path: Path, selection):
+    target = _reference_copy(tmp_path)
+    _edit_toml(target / "settings.toml", lambda d: d.__setitem__("environments", dict(selection)))
+    config = load_app_config(target)
+    assert dict(config.settings.environments) == selection
+    for task_id, enabled in selection.items():
+        assert config.settings.environment_enabled(task_id) is enabled
+    # Disabling an environment never removes its profile or model choice.
+    assert config.profiles["coding"].default_model == "qwen3_coder_30b_heretic"
+    assert config.profiles["chat"].default_model == "qwen_qwen3_30b_a3b_instruct_2507_q4_k_m"
+
+
+def test_task_missing_from_environments_table_is_disabled(tmp_path: Path):
+    target = _reference_copy(tmp_path)
+    _edit_toml(target / "settings.toml", lambda d: d.__setitem__("environments", {"chat": True}))
+    environments = load_app_config(target).settings.environments
+    assert environments == {"coding": False, "chat": True, "agent": False, "image": False}
+
+
+def test_unknown_environment_keys_are_ignored(tmp_path: Path):
+    target = _reference_copy(tmp_path)
+    _edit_toml(
+        target / "settings.toml",
+        lambda d: d.__setitem__("environments", {"chat": True, "future_task": True}),
+    )
+    assert "future_task" not in load_app_config(target).settings.environments
+
+
+def test_invalid_environment_value_names_file_and_key(tmp_path: Path):
+    target = _reference_copy(tmp_path)
+    _edit_toml(target / "settings.toml", lambda d: d.__setitem__("environments", {"image": "yes"}))
+    with pytest.raises(ConfigError, match=r"settings\.toml: \[environments\]: 'image' must be true or false"):
+        load_app_config(target)
+
+
+def test_prompt_handoff_to_disabled_environment_is_not_required(tmp_path: Path):
+    target = _reference_copy(tmp_path)
+    _edit_toml(target / "profiles.toml", lambda d: d["profiles"].pop("image"))
+    config = load_app_config(target)  # Image inferred as off: no image profile.
+    assert config.settings.environments["image"] is False
+
+    _edit_toml(
+        target / "settings.toml",
+        lambda d: d.__setitem__(
+            "environments", {"coding": True, "chat": True, "agent": True, "image": True}
+        ),
+    )
+    with pytest.raises(ConfigError, match="image_profile refers to unknown profile 'image'"):
+        load_app_config(target)
+
+
+def test_missing_required_file_produces_useful_error(tmp_path: Path):
+    target = _reference_copy(tmp_path)
+    (target / "services.toml").unlink()
+    with pytest.raises(ConfigError, match=r"Configuration file not found: .*services\.toml"):
+        load_app_config(target)
+
+
+def test_invalid_toml_names_the_file(tmp_path: Path):
+    target = _reference_copy(tmp_path)
+    (target / "profiles.toml").write_text("[profiles.chat\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match=r"profiles\.toml is not valid TOML"):
+        load_app_config(target)
+
+
+def test_validation_errors_name_the_file(tmp_path: Path):
+    target = _reference_copy(tmp_path)
+    _edit_toml(
+        target / "profiles.toml",
+        lambda d: d["profiles"]["chat"].__setitem__("services", ["no_such_service"]),
+    )
+    with pytest.raises(ConfigError, match=r"^profiles\.toml: profile 'chat': unknown service"):
         load_app_config(target)

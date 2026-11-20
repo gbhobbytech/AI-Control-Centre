@@ -12,6 +12,21 @@ DEFAULT_PROMPT_INSTRUCTION = (
 )
 
 
+# Task environments shown on the main window, in display order. Each one is
+# backed by the profile with the same identifier.
+TASK_IDS: tuple[str, ...] = ("coding", "chat", "agent", "image")
+
+
+class SetupState(str, Enum):
+    """How far the user's saved setup matches the current Setup Wizard."""
+
+    INCOMPLETE = "incomplete"
+    # Completed with an earlier, still-supported wizard. Everything keeps
+    # working; the user is offered a review of the newer setup options.
+    UPGRADE_REVIEW = "upgrade_review"
+    COMPLETE = "complete"
+
+
 class ServiceState(str, Enum):
     STOPPED = "Stopped"
     STARTING = "Starting"

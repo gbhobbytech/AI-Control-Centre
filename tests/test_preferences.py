@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ai_control_centre.config import load_app_config, load_settings
+from ai_control_centre.config import CURRENT_SETUP_SCHEMA, load_app_config, load_settings
 from ai_control_centre.preferences import save_preferences, write_toml_atomic
 
 
@@ -103,7 +103,7 @@ def test_save_preferences_round_trips_task_and_prompt_settings(tmp_path: Path):
     assert config.settings.setup_completed is True
     assert config.profiles["coding"].default_model == "large"
     assert config.profiles["chat"].default_model == "small"
-    assert config.settings.setup_schema_version == 2
+    assert config.settings.setup_schema_version == CURRENT_SETUP_SCHEMA
     assert config.settings.prompt_workshop.model_strategy == "manual"
     assert config.settings.prompt_workshop.preferred_model == "small"
     assert config.settings.prompt_workshop.enabled is True

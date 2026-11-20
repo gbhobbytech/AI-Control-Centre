@@ -205,3 +205,96 @@ def test_v1_agent_harness_ignores_stale_profile_open_service(tmp_path: Path):
     assert loaded.profiles["agent"].harness == "computer_dmz"
     assert loaded.profiles["agent"].open_service is None
     assert loaded.harnesses["computer_dmz"].open_service == "computer_dmz"
+
+
+# --- v1.2 -> v1.3 upgrade -------------------------------------------------------
+
+import hashlib
+import shutil
+
+from ai_control_centre.domain import SetupState
+
+
+def _v12_completed_config(tmp_path: Path) -> Path:
+    source = Path(__file__).resolve().parents[1] / "examples" / "reference"
+    target = tmp_path / "config"
+    shutil.copytree(source, target)
+    settings_path = target / "settings.toml"
+    settings_path.write_text(
+        settings_path.read_text(encoding="utf-8").replace(
+            "completed = false\nschema_version = 2", "completed = true\nschema_version = 2"
+        ),
+        encoding="utf-8",
+    )
+    return target
+
+
+def _digests(config_dir: Path) -> dict[str, str]:
+    return {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(config_dir.glob("*.toml"))
+    }
+
+
+def test_v12_completed_setup_stays_usable_with_review_pending(tmp_path: Path):
+    target = _v12_completed_config(tmp_path)
+    config = load_app_config(target)
+    settings = config.settings
+    assert settings.setup_schema_version == 2
+    assert settings.setup_completed is True
+    assert settings.setup_state == SetupState.UPGRADE_REVIEW
+    assert settings.setup_review_pending is True
+
+
+def test_v12_environments_are_inferred_from_existing_profiles(tmp_path: Path):
+    target = _v12_completed_config(tmp_path)
+    config = load_app_config(target)
+    assert config.settings.environments_explicit is False
+    assert dict(config.settings.environments) == {
+        "coding": True, "chat": True, "agent": True, "image": True,
+    }
+
+    profiles = target / "profiles.toml"
+    profiles.write_text(
+        profiles.read_text(encoding="utf-8").split("[profiles.image]")[0], encoding="utf-8"
+    )
+    assert load_app_config(target).settings.environments["image"] is False
+
+
+def test_v12_profiles_retain_models_and_load_never_rewrites_files(tmp_path: Path):
+    target = _v12_completed_config(tmp_path)
+    before = _digests(target)
+    for _ in range(2):  # repeatable without changes
+        config = load_app_config(target)
+        assert config.profiles["coding"].default_model == "qwen3_coder_30b_heretic"
+        assert config.profiles["chat"].default_model == "qwen_qwen3_30b_a3b_instruct_2507_q4_k_m"
+        assert config.profiles["agent"].harness == "computer_dmz"
+    assert _digests(target) == before
+
+
+def test_profile_with_missing_model_keeps_selection_and_still_loads(tmp_path: Path):
+    target = _v12_completed_config(tmp_path)
+    profiles = target / "profiles.toml"
+    profiles.write_text(
+        profiles.read_text(encoding="utf-8").replace(
+            'default_model = "qwen3_coder_30b_heretic"', 'default_model = "moved_model"'
+        ),
+        encoding="utf-8",
+    )
+    config = load_app_config(target)
+    assert config.profiles["coding"].default_model == "moved_model"
+    assert "moved_model" not in config.models
+
+
+def test_unrecognised_newer_setup_schema_requires_setup(tmp_path: Path):
+    settings = tmp_path / "settings.toml"
+    write_toml_atomic(
+        settings,
+        {
+            "paths": {"log_dir": str(tmp_path / "logs"), "runtime_dir": str(tmp_path / "runtime")},
+            "setup": {"completed": True, "schema_version": CURRENT_SETUP_SCHEMA + 1},
+        },
+    )
+    loaded = load_settings(settings)
+    assert loaded.setup_state == SetupState.INCOMPLETE
+    assert loaded.setup_completed is False

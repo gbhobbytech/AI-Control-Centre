@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import tomllib
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from urllib.parse import urlparse
 
 from .domain import (
@@ -17,12 +18,18 @@ from .domain import (
     ProfileConfig,
     PromptWorkshopConfig,
     ServiceConfig,
+    SetupState,
+    TASK_IDS,
 )
 from .models import discover_models
 from .tuning import CURRENT_TUNING_SCHEMA
 
 
-CURRENT_SETUP_SCHEMA = 2
+# Schema 3 (v1.3.0) records which task environments the user runs.
+CURRENT_SETUP_SCHEMA = 3
+# Setups completed with these earlier wizards stay usable without changes.
+# The user is offered a review rather than being forced through setup again.
+UPGRADE_REVIEW_SETUP_SCHEMAS = frozenset({2})
 
 
 class ConfigError(ValueError):
@@ -89,6 +96,19 @@ class Settings:
     setup_schema_version: int = 0
     prompt_workshop: PromptWorkshopConfig = field(default_factory=PromptWorkshopConfig)
     appearance: dict = field(default_factory=dict)
+    setup_state: SetupState = SetupState.INCOMPLETE
+    # Which task environments the user intends to run. When settings.toml has
+    # no [environments] table (every v1.2 configuration) this is inferred from
+    # the configured profiles by load_app_config().
+    environments: Mapping[str, bool] = field(default_factory=dict)
+    environments_explicit: bool = False
+
+    @property
+    def setup_review_pending(self) -> bool:
+        return self.setup_state == SetupState.UPGRADE_REVIEW
+
+    def environment_enabled(self, task_id: str) -> bool:
+        return bool(self.environments.get(task_id, False))
 
 
 @dataclass(frozen=True)
@@ -146,7 +166,16 @@ def load_settings(path: Path) -> Settings:
     if not isinstance(setup_raw, dict):
         raise ConfigError("[setup] must be a table")
     setup_schema_version = int(setup_raw.get("schema_version", 0) or 0)
-    setup_completed = bool(setup_raw.get("completed", False)) and setup_schema_version == CURRENT_SETUP_SCHEMA
+    setup_marked_complete = bool(setup_raw.get("completed", False))
+    if setup_marked_complete and setup_schema_version == CURRENT_SETUP_SCHEMA:
+        setup_state = SetupState.COMPLETE
+    elif setup_marked_complete and setup_schema_version in UPGRADE_REVIEW_SETUP_SCHEMAS:
+        setup_state = SetupState.UPGRADE_REVIEW
+    else:
+        setup_state = SetupState.INCOMPLETE
+    setup_completed = setup_state != SetupState.INCOMPLETE
+
+    environments, environments_explicit = _load_environments(data.get("environments"))
 
     prompt_raw = data.get("prompt_workshop", {})
     if prompt_raw is None:
@@ -241,7 +270,32 @@ def load_settings(path: Path) -> Settings:
         setup_schema_version=setup_schema_version,
         prompt_workshop=prompt_workshop,
         appearance=_load_appearance(data.get("appearance", {})),
+        setup_state=setup_state,
+        environments=environments,
+        environments_explicit=environments_explicit,
     )
+
+
+def _load_environments(raw: Any) -> tuple[dict[str, bool], bool]:
+    """Parse the optional [environments] table.
+
+    Returns the selections and whether the table was present. A task missing
+    from a present table is disabled. Unknown keys are ignored so a newer
+    configuration still loads in this version.
+    """
+    if raw is None:
+        return {}, False
+    if not isinstance(raw, dict):
+        raise ConfigError("[environments] must be a table of true/false values")
+    environments: dict[str, bool] = {}
+    for task_id in TASK_IDS:
+        value = raw.get(task_id, False)
+        if not isinstance(value, bool):
+            raise ConfigError(
+                f"[environments]: '{task_id}' must be true or false, not {value!r}"
+            )
+        environments[task_id] = value
+    return environments, True
 
 
 def _load_appearance(raw) -> dict:
@@ -659,8 +713,9 @@ def load_profiles(
         selected_model = _optional_str(raw, "default_model", context)
         if selected_model is None:
             selected_model = _optional_str(raw, "selected_model", context)
-        if selected_model is not None and selected_model not in models:
-            raise ConfigError(f"{context}: unknown default_model '{selected_model}'")
+        # An unknown model is not a load error: the model file may have been
+        # moved or a model root removed. The profile keeps its selection so
+        # nothing is lost, and the task reports the missing model instead.
 
         profiles[profile_id] = ProfileConfig(
             id=profile_id,
@@ -674,11 +729,72 @@ def load_profiles(
     return profiles
 
 
+_T = TypeVar("_T")
+
+
+def _load_file(path: Path, loader: Callable[..., _T], *args: Any, required: bool = True) -> _T:
+    """Run a loader and make its errors name the file the user needs to fix."""
+    if required and not path.is_file():
+        raise ConfigError(
+            f"Configuration file not found: {path}. "
+            "Re-run the installer to create the starter configuration."
+        )
+    try:
+        return loader(path, *args)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"{path.name} is not valid TOML: {exc}") from exc
+    except ConfigError as exc:
+        raise ConfigError(f"{path.name}: {exc}") from exc
+
+
+def _service_closure(
+    roots: tuple[str, ...] | list[str], services: Mapping[str, ServiceConfig]
+) -> set[str]:
+    """Services in roots plus everything they depend on."""
+    seen: set[str] = set()
+    pending = list(roots)
+    while pending:
+        service_id = pending.pop()
+        if service_id in seen or service_id not in services:
+            continue
+        seen.add(service_id)
+        pending.extend(services[service_id].dependencies)
+    return seen
+
+
+def environment_services(
+    profile: ProfileConfig,
+    services: Mapping[str, ServiceConfig],
+    harnesses: Mapping[str, HarnessConfig],
+) -> set[str]:
+    """Every service a task environment would start, including dependencies."""
+    roots = list(profile.services)
+    harness = harnesses.get(profile.harness) if profile.harness else None
+    if harness is not None:
+        roots.extend(harness.services)
+    return _service_closure(roots, services)
+
+
+def resolve_environments(
+    settings: Settings, profiles: Mapping[str, ProfileConfig]
+) -> dict[str, bool]:
+    """Selections from [environments], or inferred from profiles when absent.
+
+    Inference reproduces v1.2 behaviour: a task is offered when its profile
+    exists, and its availability then depends on configuration completeness.
+    """
+    if settings.environments_explicit:
+        return {task_id: bool(settings.environments.get(task_id, False)) for task_id in TASK_IDS}
+    return {task_id: task_id in profiles for task_id in TASK_IDS}
+
+
 def load_app_config(config_dir: Path) -> AppConfig:
-    settings = load_settings(config_dir / "settings.toml")
-    services = load_services(config_dir / "services.toml")
+    settings = _load_file(config_dir / "settings.toml", load_settings)
+    services = _load_file(config_dir / "services.toml", load_services)
     services = _apply_prompt_helper_settings(services, settings.prompt_workshop)
-    models = load_models(config_dir / "models.toml", settings.llm_model_roots)
+    models = _load_file(
+        config_dir / "models.toml", load_models, settings.llm_model_roots, required=False
+    )
 
     for service_id, service in services.items():
         if (
@@ -687,23 +803,41 @@ def load_app_config(config_dir: Path) -> AppConfig:
             and service.default_model not in models
         ):
             raise ConfigError(
-                f"service '{service_id}': unknown default_model '{service.default_model}'"
-            )
-        if (
-            isinstance(service, ProcessServiceConfig)
-            and service.uses_model
-            and service.default_model is None
-            and not models
-            and settings.setup_completed
-        ):
-            raise ConfigError(
-                f"service '{service_id}' uses model placeholders but no models are configured or discovered"
+                f"services.toml: service '{service_id}': unknown default_model '{service.default_model}'"
             )
 
     profile_path = config_dir / "profiles.toml"
-    harnesses = load_harnesses(profile_path, services)
-    profiles = load_profiles(profile_path, services, models, harnesses)
+    harnesses = _load_file(profile_path, load_harnesses, services, required=False)
+    profiles = _load_file(
+        profile_path, load_profiles, services, models, harnesses, required=False
+    )
+
+    environments = resolve_environments(settings, profiles)
+    settings = replace(settings, environments=environments)
     workshop = settings.prompt_workshop
+
+    # Only services that an enabled environment (or an enabled Prompt Helper)
+    # would start need a GGUF model. An Image-only setup has none to offer.
+    model_service_ids: set[str] = set()
+    for task_id, enabled in environments.items():
+        profile = profiles.get(task_id)
+        if enabled and profile is not None:
+            model_service_ids |= environment_services(profile, services, harnesses)
+    if workshop.enabled:
+        model_service_ids |= _service_closure([workshop.service], services)
+    if settings.setup_completed and not models:
+        for service_id in sorted(model_service_ids):
+            service = services[service_id]
+            if (
+                isinstance(service, ProcessServiceConfig)
+                and service.uses_model
+                and service.default_model is None
+            ):
+                raise ConfigError(
+                    f"service '{service_id}' uses model placeholders but no models are configured or discovered. "
+                    "Add a GGUF model folder in Settings, or turn off the environments that need a model."
+                )
+
     if workshop.enabled:
         if workshop.model_strategy == "manual":
             if workshop.preferred_model is None:
@@ -719,6 +853,10 @@ def load_app_config(config_dir: Path) -> AppConfig:
             ("agent_profile", workshop.agent_profile),
             ("image_profile", workshop.image_profile),
         ):
+            # Hand-off targets for a task environment that is turned off are
+            # not needed; the GUI reports that hand-off as unavailable.
+            if key != "startup_profile" and profile_id in TASK_IDS and not environments[profile_id]:
+                continue
             if profile_id not in profiles:
                 raise ConfigError(
                     f"[prompt_workshop]: {key} refers to unknown profile '{profile_id}'"
