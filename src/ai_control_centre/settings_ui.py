@@ -1265,7 +1265,14 @@ class SetupWizard(tk.Toplevel):
         if current is None:
             messagebox.showinfo("Setup Wizard", "Choose the ComfyUI folder first.", parent=self)
             return
-        python = filedialog.askopenfilename(parent=self, title="Choose the Python that runs ComfyUI", initialdir=str(current.path))
+        start = current.path
+        for venv in ("venv", ".venv"):
+            if (current.path / venv / "bin").is_dir():
+                start = current.path / venv / "bin"
+                break
+        python = filedialog.askopenfilename(
+            parent=self, title="Choose the Python that runs ComfyUI (usually venv/bin/python)", initialdir=str(start)
+        )
         if python:
             self.session.choose_comfyui_path(current.path, python)
             self._collect_software()

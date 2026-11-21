@@ -28,7 +28,9 @@ from .discovery import (
     LLAMA_CPP,
     DiscoveryReport,
     Installation,
+    comfyui_folders_inside,
     discover_installations,
+    is_comfyui_folder,
     portable_path,
     validate_comfyui,
     validate_llama_executable,
@@ -303,7 +305,18 @@ class SetupSession:
         return self.draft.llama
 
     def choose_comfyui_path(self, folder: Path | str, python: Path | str | None = None) -> Installation:
-        self.draft.comfyui = validate_comfyui(folder, python, home=self.home)
+        chosen = validate_comfyui(folder, python, home=self.home)
+        if python is None and not is_comfyui_folder(chosen.path):
+            # Folder pickers often return the folder the user was *in*, not the
+            # one highlighted. Use a single ComfyUI found just inside it.
+            inside = comfyui_folders_inside(chosen.path)
+            if len(inside) == 1:
+                found = validate_comfyui(inside[0], home=self.home)
+                chosen = Installation(**{
+                    **found.__dict__,
+                    "notes": (f"Using {inside[0]}, found inside the folder you chose.", *found.notes),
+                })
+        self.draft.comfyui = chosen
         return self.draft.comfyui
 
     def scan_models(self, roots: list[Path] | tuple[Path, ...]) -> dict[str, ModelConfig]:

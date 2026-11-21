@@ -138,9 +138,19 @@ def _same_place(a: Path, b: Path) -> bool:
 
 
 def _dedupe(installations: Iterable[Installation]) -> list[Installation]:
+    """Drop repeats of the same installation *and* program.
+
+    The same ComfyUI folder with a different Python is a different choice: a
+    configured entry with a broken Python must not hide the working one.
+    """
     unique: list[Installation] = []
     for item in installations:
-        if any(_same_place(item.path, seen.path) for seen in unique):
+        if any(
+            _same_place(item.path, seen.path)
+            and (item.executable is None) == (seen.executable is None)
+            and (item.executable is None or _same_place(item.executable, seen.executable))
+            for seen in unique
+        ):
             continue
         unique.append(item)
     return unique
@@ -259,6 +269,15 @@ def _venv_python(venv: Path) -> Path | None:
 
 def is_comfyui_folder(path: Path) -> bool:
     return (path / "main.py").is_file() and (path / "comfy").is_dir()
+
+
+def comfyui_folders_inside(folder: Path) -> list[Path]:
+    """ComfyUI installations directly inside folder (one level down)."""
+    try:
+        children = sorted(child for child in folder.iterdir() if child.is_dir())
+    except OSError:
+        return []
+    return [child for child in children if is_comfyui_folder(child)]
 
 
 def validate_comfyui(

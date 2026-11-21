@@ -267,3 +267,12 @@ def test_discover_command_runs_without_configuration(tmp_path: Path, capsys):
     out = capsys.readouterr().out
     assert "current configuration not loaded" in out
     assert "llama.cpp (llama-server)" in out and "ComfyUI" in out
+
+
+def test_broken_configured_python_does_not_hide_working_environment(tmp_path: Path):
+    """Seen on Orson Mini: config pointed at venv/bin/pythonX for ~/ComfyUI."""
+    _orson_mini(tmp_path)
+    configured = [(tmp_path / "ComfyUI", tmp_path / "ComfyUI/venv/bin/pythonX")]
+    found = find_comfyui(home=tmp_path, configured=configured)
+    assert [(item.source, item.usable) for item in found] == [(SOURCE_CONFIGURED, False), (SOURCE_COMMON, True)]
+    assert found[1].recommended and found[1].executable == tmp_path / "ComfyUI/venv/bin/python"

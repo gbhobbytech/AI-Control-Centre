@@ -448,3 +448,34 @@ def test_new_comfyui_next_to_older_llama_entry_gets_shared_group(tmp_path: Path)
     session.apply()
     config = load_app_config(config_dir)
     assert set(config.services["llama"].conflict_groups) & set(config.services["comfyui"].conflict_groups)
+
+
+def test_wizard_offers_working_comfyui_when_configured_python_is_broken(tmp_path: Path):
+    config_dir, home, _ = _fresh_install(tmp_path)
+    _install_comfyui(home)
+    session = _session(config_dir, home)
+    _only(session, "image")
+    session.apply()  # ComfyUI service now configured
+    services = config_dir / "services.toml"
+    services.write_text(
+        services.read_text(encoding="utf-8").replace("venv/bin/python", "venv/bin/pythonX"), encoding="utf-8"
+    )
+
+    session = _session(config_dir, home)
+    assert session.draft.comfyui.usable
+    assert session.draft.comfyui.executable == home / "ComfyUI/venv/bin/python"
+    [change] = session.path_changes()
+    assert change.field == "executable" and change.old.name == "pythonX"
+    session.apply()
+    assert load_app_config(config_dir).services["comfyui"].executable == home / "ComfyUI/venv/bin/python"
+
+
+def test_choosing_the_folder_that_contains_comfyui_uses_it(tmp_path: Path):
+    config_dir, home, _ = _fresh_install(tmp_path)
+    _install_comfyui(home)
+    session = _session(config_dir, home)
+    chosen = session.choose_comfyui_path(home)  # the folder dialog returned ~ not ~/ComfyUI
+    assert chosen.usable and chosen.path == home / "ComfyUI"
+    assert chosen.notes[0] == f"Using {home / 'ComfyUI'}, found inside the folder you chose."
+    # A Python chosen explicitly is never second-guessed.
+    assert not session.choose_comfyui_path(home, home / "ComfyUI/main.py").usable
