@@ -4,11 +4,26 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
+from dataclasses import replace as dc_replace
+
 from .config import AppConfig, load_app_config
-from .domain import HarnessConfig
+from .discovery import COMFYUI, LLAMA_CPP, Installation
+from .domain import HarnessConfig, TASK_IDS
 from .harnesses import available_custom_harness_services, discover_agent_harnesses
 from .models import model_total_size_bytes
-from .preferences import detect_setup_environment, rescan_models, save_preferences, save_appearance
+from .monitoring import create_gpu_monitor
+from .preferences import rescan_models, save_preferences, save_appearance
+from .setup_flow import (
+    ENVIRONMENT_DESCRIPTIONS,
+    ENVIRONMENT_NAMES,
+    STEP_ENVIRONMENTS,
+    STEP_LAUNCH,
+    STEP_MODELS,
+    STEP_PROMPT,
+    STEP_SOFTWARE,
+    SetupError,
+    SetupSession,
+)
 from .theme import DEFAULT_APPEARANCE, style_classic, validate_appearance
 from .tuning_ui import ModelTuningPanel, ModelTuningWindow
 from .ui_utils import HoverTip, ScrollableFrame, fit_window_to_screen
@@ -883,435 +898,554 @@ class SettingsWindow(tk.Toplevel):
             self.appearance_vars[key].set(str(value))
 
 class SetupWizard(tk.Toplevel):
-    """Small first-run wizard. Advanced tuning remains in the Settings window."""
+    """Task-oriented Setup Wizard: environments, software, models, review.
 
-    def __init__(self, parent, config_dir: Path, config: AppConfig, on_saved):
+    All decisions live in setup_flow.SetupSession; this window only shows
+    and edits its draft. Nothing is saved until Save & Finish, except launch
+    settings saved from the model configuration window (as in v1.2).
+    """
+
+    _STEP_TITLES = {
+        "welcome": (0, "Welcome to AI Control Centre 1.3"),
+        "environments": (1, "Environments"),
+        "software": (2, "Software"),
+        "models": (3, "Models & services - task models"),
+        "launch": (3, "Models & services - launch settings"),
+        "prompt": (3, "Models & services - Prompt Helper"),
+        "review": (4, "Review"),
+    }
+
+    def __init__(self, parent, config_dir: Path, config: AppConfig, on_saved, *, upgrade_review: bool | None = None):
         super().__init__(parent)
         self.title("AI Control Centre Setup Wizard")
         self.transient(parent)
-        self.grab_set()
-        self.state_data = _PreferenceState(config_dir, config)
-        if not self.state_data.harnesses:
-            self.state_data.harnesses = discover_agent_harnesses(config.services, self.state_data.harnesses)
         self.on_saved = on_saved
-        self.page = 0
-        self.pages: list[ttk.Frame] = []
-        self.root_var = tk.StringVar(value="\n".join(str(p) for p in self.state_data.roots))
-        self.task_vars = {task: tk.StringVar() for task in _TASKS}
-        self.task_menus: dict[str, ModelMenu] = {}
-        self.harness_var = tk.StringVar()
-        self.harness_menu: HarnessMenu | None = None
-        self.agent_enabled_var = tk.BooleanVar(value=bool(self.state_data.agent_harness and self.state_data.harnesses))
-        self.harness_status_var = tk.StringVar(value="")
-        self.prompt_var = tk.StringVar()
-        self.prompt_enabled_var = tk.BooleanVar(value=self.state_data.prompt_enabled)
-        self.auto_var = tk.BooleanVar(value=self.state_data.auto_lightest)
-        self.mode_var = tk.StringVar(value=self.state_data.processing_mode)
-        self.keep_var = tk.BooleanVar(value=self.state_data.keep_loaded)
+        monitor = create_gpu_monitor(config.settings.gpu_backend)
+        try:
+            self.session = SetupSession(config_dir, gpu_status=monitor.status if monitor is not None else None)
+        except Exception as exc:  # noqa: BLE001 - configuration UI boundary
+            messagebox.showerror("Setup Wizard", f"The current configuration could not be loaded:\n\n{exc}", parent=parent)
+            self.destroy()
+            return
+        self.grab_set()
+        self.show_welcome = self.session.upgrade_review_pending if upgrade_review is None else upgrade_review
+        self.page = ""
         self.status_var = tk.StringVar(value="")
+        self.step_var = tk.StringVar(value="")
         self.model_config_window: ModelTuningWindow | None = None
+        self.env_vars = {task: tk.BooleanVar(value=self.session.draft.environments.get(task, False)) for task in TASK_IDS}
         self._build()
-        self._show_page(0)
+        self._show(self._sequence()[0])
         style_classic(self)
         fit_window_to_screen(self, preferred_width=900, preferred_height=760, min_width=760, min_height=560, margin_y=110)
         self.protocol("WM_DELETE_WINDOW", self._close_setup)
 
-    def _close_setup(self) -> None:
-        if messagebox.askyesno("Setup Wizard", "Exit setup? Unsaved setup choices will be lost.", parent=self):
-            self.destroy()
+    # --- Frame and navigation -------------------------------------------------
 
     def _build(self) -> None:
         outer = ttk.Frame(self, padding=16)
         outer.pack(fill="both", expand=True)
-        outer.rowconfigure(1, weight=1)
+        outer.rowconfigure(2, weight=1)
         outer.columnconfigure(0, weight=1)
-        ttk.Label(outer, text="AI Control Centre Setup", font=("TkDefaultFont", 16, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 12))
-        host = ttk.Frame(outer); models = ttk.Frame(outer); tasks = ttk.Frame(outer); configure = ttk.Frame(outer); prompt = ttk.Frame(outer); review = ttk.Frame(outer)
-        self.pages = [host, models, tasks, configure, prompt, review]
-        for frame in self.pages:
-            frame.grid(row=1, column=0, sticky="nsew")
-        self._page_host(host)
-        self._page_models(models)
-        self._page_tasks(tasks)
-        self._page_model_configuration(configure)
-        self._page_prompt(prompt)
-        self._page_review(review)
-        nav = ttk.Frame(outer); nav.grid(row=2, column=0, sticky="ew", pady=(12, 0)); nav.columnconfigure(1, weight=1)
-        self.back = ttk.Button(nav, text="Back", command=self._back); self.back.grid(row=0, column=0)
-        ttk.Label(nav, textvariable=self.status_var).grid(row=0, column=1)
-        self.next = ttk.Button(nav, text="Next", command=self._next); self.next.grid(row=0, column=2)
+        ttk.Label(outer, text="AI Control Centre Setup", font=("TkDefaultFont", 16, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(outer, textvariable=self.step_var, style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 10))
+        self.page_host = ttk.Frame(outer)
+        self.page_host.grid(row=2, column=0, sticky="nsew")
+        self.page_host.rowconfigure(0, weight=1)
+        self.page_host.columnconfigure(0, weight=1)
+        nav = ttk.Frame(outer)
+        nav.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        nav.columnconfigure(1, weight=1)
+        self.back = ttk.Button(nav, text="Back", command=self._back)
+        self.back.grid(row=0, column=0)
+        ttk.Label(nav, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=1)
+        self.next = ttk.Button(nav, text="Next", style="Primary.TButton", command=self._next)
+        self.next.grid(row=0, column=2)
 
-    def _page_host(self, p) -> None:
-        d = detect_setup_environment()
-        ttk.Label(p, text="System detection", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
-        for label, value in (("Operating system", d.os_name), ("Python", d.python_version), ("Docker", "Available" if d.docker_available else "Not found"), ("NVIDIA monitoring", "Available" if d.nvidia_smi_available else "Not found")):
-            row=ttk.Frame(p); row.pack(fill="x", pady=5); ttk.Label(row,text=label,width=22).pack(side="left"); ttk.Label(row,text=value).pack(side="left")
-        ttk.Label(p, text="The wizard does not install or alter system packages. It only writes AI Control Centre user configuration.", wraplength=650).pack(anchor="w", pady=(18,0))
+    def _sequence(self) -> list[str]:
+        pages = ["welcome"] if self.show_welcome else []
+        pages += ["environments", "software"]
+        if self.session.draft.needs_llama:
+            pages += ["models", "launch"]
+            if self.session.prompt_available():
+                pages.append("prompt")
+        pages.append("review")
+        return pages
 
-    def _page_models(self, p) -> None:
-        p.columnconfigure(0, weight=1); p.rowconfigure(3, weight=1)
-        ttk.Label(p, text="Model discovery", font=("TkDefaultFont", 12, "bold")).grid(row=0,column=0,sticky="w")
+    def _show(self, page: str) -> None:
+        self.page = page
+        for child in self.page_host.winfo_children():
+            child.destroy()
+        frame = ttk.Frame(self.page_host)
+        frame.grid(row=0, column=0, sticky="nsew")
+        getattr(self, f"_page_{page}")(frame)
+        number, title = self._STEP_TITLES[page]
+        self.step_var.set(title if number == 0 else f"Step {number} of 4: {title}")
+        sequence = self._sequence()
+        self.back.configure(state="disabled" if sequence.index(page) == 0 else "normal")
+        if page == "welcome":
+            self.next.configure(text="Review setup")
+        elif page == "review":
+            self.next.configure(text="Save & Finish")
+        else:
+            self.next.configure(text="Next")
+        self.status_var.set("")
+
+    def _collect(self) -> bool:
+        """Copy the current page's fields into the draft. False keeps the page open."""
+        collector = getattr(self, f"_collect_{self.page}", None)
+        return True if collector is None else collector() is not False
+
+    def _back(self) -> None:
+        if not self._collect():
+            return
+        sequence = self._sequence()
+        index = sequence.index(self.page) if self.page in sequence else 0
+        if index > 0:
+            self._show(sequence[index - 1])
+
+    def _next(self) -> None:
+        if not self._collect():
+            return
+        if self.page == "review":
+            self._finish()
+            return
+        if not self._confirm_step_issues():
+            return
+        sequence = self._sequence()
+        self._show(sequence[sequence.index(self.page) + 1])
+
+    def _confirm_step_issues(self) -> bool:
+        steps = {
+            "environments": (STEP_ENVIRONMENTS,),
+            "software": (STEP_SOFTWARE,),
+            "models": (STEP_MODELS,),
+            "launch": (STEP_LAUNCH,),
+            "prompt": (STEP_PROMPT,),
+        }.get(self.page, ())
+        issues = [issue for step in steps for issue in self.session.issues(step)]
+        if not issues:
+            return True
+        general = [issue.message for issue in issues if not issue.environments]
+        if general:
+            messagebox.showerror("Setup Wizard", "\n\n".join(general), parent=self)
+            return False
+        affected = sorted({ENVIRONMENT_NAMES[t] for issue in issues for t in issue.environments})
+        return messagebox.askyesno(
+            "Setup Wizard",
+            "\n\n".join(issue.message for issue in issues)
+            + f"\n\nIf these are not fixed, {', '.join(affected)} will be saved switched off. Continue anyway?",
+            parent=self,
+        )
+
+    def _close_setup(self) -> None:
+        if messagebox.askyesno(
+            "Setup Wizard",
+            "Exit setup? Nothing will be saved.\n\nLaunch settings you already saved for a model stay saved.",
+            parent=self,
+        ):
+            self.destroy()
+
+    # --- Welcome (upgrade from v1.2) -------------------------------------------
+
+    def _page_welcome(self, p) -> None:
+        p.columnconfigure(0, weight=1)
+        p.rowconfigure(2, weight=1)
         ttk.Label(
             p,
-            text="Enter one LLM model root per line. Only complete GGUF models can be selected for tasks. "
-                 "Configured models whose files no longer exist are shown as missing, not as discovered models.",
+            text="Your existing setup keeps working as it is. Version 1.3 adds optional environments, "
+                 "including Image with ComfyUI. Keep your current setup, or review it to turn on new features.",
             wraplength=760,
-        ).grid(row=1,column=0,sticky="w",pady=(4,6))
-        self.root_text=tk.Text(p,height=5); self.root_text.grid(row=2,column=0,sticky="ew"); self.root_text.insert("1.0",self.root_var.get())
-        self.model_list=tk.Listbox(p,height=12); self.model_list.grid(row=3,column=0,sticky="nsew",pady=8)
-        controls=ttk.Frame(p); controls.grid(row=4,column=0,sticky="w")
-        ttk.Button(controls,text="Browse…",command=self._browse_model_root).pack(side="left")
-        ttk.Button(controls,text="Rescan Models",command=self._scan).pack(side="left",padx=(8,0))
-        self._fill_model_list()
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Button(p, text="Keep my current setup", style="Primary.TButton", command=self._keep_current).grid(row=1, column=0, sticky="w", pady=12)
+        summary = tk.Text(p, height=14, wrap="word")
+        summary.grid(row=2, column=0, sticky="nsew")
+        summary.insert("1.0", self.session.review().as_text())
+        summary.configure(state="disabled")
 
-    def _page_tasks(self, p) -> None:
-        p.columnconfigure(1, weight=1)
-        ttk.Label(p,text="Task model defaults",font=("TkDefaultFont",12,"bold")).grid(row=0,column=0,columnspan=3,sticky="w",pady=(0,10))
-
-        # Coding and Chat are core LLM tasks.
-        for row,task in enumerate(("coding", "chat"),start=1):
-            ttk.Label(p,text=task.title()).grid(row=row,column=0,sticky="w",pady=6,padx=(0,12))
-            menu=ModelMenu(p,self.task_vars[task]); menu.grid(row=row,column=1,columnspan=2,sticky="ew",pady=6); self.task_menus[task]=menu
-            menu.set_models(self.state_data.models,self.state_data.task_models.get(task))
-
-        ttk.Separator(p).grid(row=3,column=0,columnspan=3,sticky="ew",pady=12)
-        ttk.Checkbutton(
-            p, text="Configure Agent on this computer", variable=self.agent_enabled_var,
-            command=self._update_agent_setup_controls,
-        ).grid(row=4,column=0,columnspan=3,sticky="w",pady=(0,8))
-
-        ttk.Label(p,text="Agent model").grid(row=5,column=0,sticky="w",pady=6,padx=(0,12))
-        agent_menu=ModelMenu(p,self.task_vars["agent"]); agent_menu.grid(row=5,column=1,columnspan=2,sticky="ew",pady=6); self.task_menus["agent"]=agent_menu
-        agent_menu.set_models(self.state_data.models,self.state_data.task_models.get("agent"))
-
-        ttk.Label(p,text="Agent harness").grid(row=6,column=0,sticky="w",pady=6,padx=(0,12))
-        self.harness_menu=HarnessMenu(p,self.harness_var); self.harness_menu.grid(row=6,column=1,columnspan=2,sticky="ew",pady=6)
-        self.harness_menu.set_harnesses(self.state_data.harnesses,self.state_data.agent_harness)
-
-        harness_actions=ttk.Frame(p); harness_actions.grid(row=7,column=1,columnspan=2,sticky="w",pady=(4,4))
-        ttk.Button(harness_actions,text="Scan for Harnesses",command=self._setup_scan_harnesses).pack(side="left")
-        ttk.Button(harness_actions,text="Add Custom Harness",command=self._setup_add_custom_harness).pack(side="left",padx=8)
-        ttk.Label(p,textvariable=self.harness_status_var,style="Muted.TLabel",wraplength=650).grid(row=8,column=0,columnspan=3,sticky="w",pady=(2,0))
-        ttk.Label(p,text="The harness supplies the agent runtime/interface; the Agent task still uses the selected LLM. You can skip Agent and configure it later under Preferences.",style="Muted.TLabel",wraplength=650).grid(row=9,column=0,columnspan=3,sticky="w",pady=(8,0))
-        self._update_agent_setup_controls()
-
-    def _update_agent_setup_controls(self) -> None:
-        enabled = self.agent_enabled_var.get()
-        state = "normal" if enabled else "disabled"
-        if "agent" in self.task_menus:
-            self.task_menus["agent"].configure(state=state)
-        if self.harness_menu is not None:
-            self.harness_menu.configure(state=state)
-        if not enabled:
-            self.harness_status_var.set("Agent will be unavailable until a harness is configured.")
-        elif not self.state_data.harnesses:
-            self.harness_status_var.set("No harness is configured. Scan for a recognised runtime or add a custom harness.")
-        else:
-            self.harness_status_var.set(f"{len(self.state_data.harnesses)} harness(es) available.")
-
-    def _setup_scan_harnesses(self) -> None:
-        discovered = discover_agent_harnesses(self.state_data.config.services, self.state_data.harnesses)
-        added = [hid for hid in discovered if hid not in self.state_data.harnesses]
-        self.state_data.harnesses = discovered
-        selected = self.harness_menu.selected_id() if self.harness_menu is not None else self.state_data.agent_harness
-        if self.harness_menu is not None:
-            self.harness_menu.set_harnesses(self.state_data.harnesses, selected)
-        if self.state_data.harnesses:
-            self.agent_enabled_var.set(True)
-        self.harness_status_var.set(
-            f"Found {len(added)} new harness suggestion(s)." if added
-            else ("No new recognised harnesses found. Add a custom harness if needed." if not self.state_data.harnesses else f"{len(self.state_data.harnesses)} harness(es) available; no new suggestions found.")
-        )
-        self._update_agent_setup_controls()
-
-    def _setup_store_harness(self, harness: HarnessConfig) -> None:
-        self.state_data.harnesses[harness.id] = harness
-        self.state_data.agent_harness = harness.id
-        self.agent_enabled_var.set(True)
-        if self.harness_menu is not None:
-            self.harness_menu.set_harnesses(self.state_data.harnesses, harness.id)
-        self._update_agent_setup_controls()
-
-    def _setup_add_custom_harness(self) -> None:
-        CustomHarnessDialog(self, self.state_data.config, self.state_data.harnesses, self._setup_store_harness)
-
-    def _page_model_configuration(self, p) -> None:
-        p.columnconfigure(0, weight=1); p.rowconfigure(2, weight=1)
-        ttk.Label(p,text="Configure selected models",font=("TkDefaultFont",12,"bold")).grid(row=0,column=0,sticky="w")
-        ttk.Label(p,text="V1.0 does not trust pre-V1 launch settings. Each model selected for Coding, Chat or Agent must be configured again before setup can finish.",style="Muted.TLabel",wraplength=760).grid(row=1,column=0,sticky="w",pady=(4,10))
-        self.config_model_list=tk.Listbox(p,height=12,exportselection=False); self.config_model_list.grid(row=2,column=0,sticky="nsew")
-        controls=ttk.Frame(p); controls.grid(row=3,column=0,sticky="ew",pady=10)
-        ttk.Button(controls,text="Configure selected model…",style="Primary.TButton",command=self._configure_selected_model).pack(side="left")
-        ttk.Button(controls,text="Refresh status",command=self._refresh_model_configuration).pack(side="left",padx=8)
-
-    def _page_prompt(self, p) -> None:
-        p.columnconfigure(1,weight=1)
-        ttk.Label(p,text="Prompt Helper",font=("TkDefaultFont",12,"bold")).grid(row=0,column=0,columnspan=2,sticky="w",pady=(0,10))
-        ttk.Checkbutton(
-            p, text="Enable Prompt Helper", variable=self.prompt_enabled_var,
-            command=self._update_setup_prompt_controls,
-        ).grid(row=1,column=0,columnspan=2,sticky="w",pady=(0,8))
-        ttk.Label(p,text="Preferred model").grid(row=2,column=0,sticky="w",pady=5)
-        self.prompt_menu=ModelMenu(p,self.prompt_var); self.prompt_menu.grid(row=2,column=1,sticky="ew",pady=5); self.prompt_menu.set_models(self.state_data.models,self.state_data.prompt_model,allow_none=True)
-        self.prompt_auto_check = ttk.Checkbutton(p,text="Automatically use lightest suitable model",variable=self.auto_var)
-        self.prompt_auto_check.grid(row=3,column=0,columnspan=2,sticky="w",pady=5)
-        ttk.Label(p,text="Processing").grid(row=4,column=0,sticky="nw",pady=5)
-        self.prompt_modes=ttk.Frame(p); self.prompt_modes.grid(row=4,column=1,sticky="w")
-        self.prompt_mode_buttons=[]
-        for text,value in (("CPU - lowest VRAM use","cpu"),("GPU - faster response","gpu"),("Auto - balance performance and VRAM","auto")):
-            button=ttk.Radiobutton(self.prompt_modes,text=text,value=value,variable=self.mode_var); button.pack(anchor="w"); self.prompt_mode_buttons.append(button)
-        self.prompt_keep_check = ttk.Checkbutton(p,text="Keep Prompt Helper loaded after use",variable=self.keep_var)
-        self.prompt_keep_check.grid(row=5,column=0,columnspan=2,sticky="w",pady=8)
-        ttk.Label(p,text="Advanced Prompt Helper settings can be changed later under Preferences > Settings. If disabled, Improve Prompt is greyed out but the rest of Prompt Workshop remains available.",wraplength=620,style="Muted.TLabel").grid(row=6,column=0,columnspan=2,sticky="w",pady=(12,0))
-        self._update_setup_prompt_controls()
-
-    def _update_setup_prompt_controls(self) -> None:
-        enabled = self.prompt_enabled_var.get()
-        state = "normal" if enabled else "disabled"
-        if hasattr(self, "prompt_menu"):
-            self.prompt_menu.configure(state=state)
-        if hasattr(self, "prompt_auto_check"):
-            self.prompt_auto_check.configure(state=state)
-        if hasattr(self, "prompt_mode_buttons"):
-            for button in self.prompt_mode_buttons:
-                button.configure(state=state)
-        if hasattr(self, "prompt_keep_check"):
-            self.prompt_keep_check.configure(state=state)
-
-    def _browse_model_root(self) -> None:
-        _append_model_root(self, self.root_text)
-
-    def _selected_task_models(self) -> list[str]:
-        result: list[str] = []
-        for task, menu in self.task_menus.items():
-            if task == "agent" and not self.agent_enabled_var.get():
-                continue
-            model_id = menu.selected_id()
-            if model_id and model_id not in result:
-                result.append(model_id)
-        return result
-
-    def _refresh_model_configuration(self) -> None:
+    def _keep_current(self) -> None:
         try:
-            fresh = load_app_config(self.state_data.config_dir)
-            self.state_data.config = fresh
-            self.state_data.models = dict(fresh.models)
-        except Exception as exc:
+            self.session.keep_current()
+        except Exception as exc:  # noqa: BLE001 - configuration UI boundary
+            messagebox.showerror("Setup Wizard", str(exc), parent=self)
+            return
+        self.on_saved()
+        self.destroy()
+
+    # --- Step 1: environments -----------------------------------------------------
+
+    def _page_environments(self, p) -> None:
+        p.columnconfigure(0, weight=1)
+        ttk.Label(p, text="Which workloads will you run on this computer?", font=("TkDefaultFont", 12, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(p, text="Choose any combination. You can change this later by running the Setup Wizard again.", style="Muted.TLabel", wraplength=760).grid(row=1, column=0, sticky="w", pady=(2, 10))
+        for row, task in enumerate(TASK_IDS, start=2):
+            box = ttk.Frame(p)
+            box.grid(row=row, column=0, sticky="ew", pady=6)
+            ttk.Checkbutton(box, text=ENVIRONMENT_NAMES[task], variable=self.env_vars[task]).pack(anchor="w")
+            ttk.Label(box, text=ENVIRONMENT_DESCRIPTIONS[task], style="Muted.TLabel", wraplength=720).pack(anchor="w", padx=(24, 0))
+
+    def _collect_environments(self) -> bool:
+        self.session.draft.environments = {task: bool(self.env_vars[task].get()) for task in TASK_IDS}
+        return True
+
+    # --- Step 2: software -----------------------------------------------------------
+
+    def _page_software(self, p) -> None:
+        draft = self.session.draft
+        p.columnconfigure(0, weight=1)
+        ttk.Label(p, text="Software found on this computer", font=("TkDefaultFont", 12, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(p, text="Discovery only looks at files; nothing is started or installed. Choose an entry, or browse to your own.", style="Muted.TLabel", wraplength=760).grid(row=1, column=0, sticky="w", pady=(2, 10))
+        row = 2
+        if draft.needs_llama:
+            self._software_block(p, row, "llama.cpp (Coding, Chat, Agent)", "llama")
+            row += 1
+        if draft.needs_comfyui:
+            self._software_block(p, row, "ComfyUI (Image)", "comfyui")
+            row += 1
+        changes = self.session.path_changes()
+        if changes:
+            text = "\n".join(f"{c.service_id} {c.field} will change from {c.old} to {c.new}" for c in changes)
+            ttk.Label(p, text=text, style="Muted.TLabel", wraplength=760).grid(row=row, column=0, sticky="w", pady=(8, 0))
+            row += 1
+        ttk.Button(p, text="Search again", command=self._rediscover).grid(row=row, column=0, sticky="w", pady=(10, 0))
+
+    def _software_options(self, kind: str) -> list[Installation]:
+        report = self.session.report
+        options = list(report.llama_cpp if kind == "llama" else report.comfyui)
+        chosen = self.session.draft.llama if kind == "llama" else self.session.draft.comfyui
+        if chosen is not None and all(option.path != chosen.path or option.executable != chosen.executable for option in options):
+            options.append(chosen)
+        return options
+
+    def _software_block(self, parent, row: int, title: str, kind: str) -> None:
+        draft = self.session.draft
+        box = ttk.LabelFrame(parent, text=title, padding=10)
+        box.grid(row=row, column=0, sticky="ew", pady=6)
+        box.columnconfigure(0, weight=1)
+        options = self._software_options(kind)
+        chosen = draft.llama if kind == "llama" else draft.comfyui
+        var = tk.StringVar(value="")
+        setattr(self, f"_{kind}_var", var)
+        setattr(self, f"_{kind}_options", options)
+        if not options:
+            ttk.Label(box, text="Not found in the usual places. Use Browse to choose it.").grid(row=0, column=0, sticky="w")
+        for index, option in enumerate(options):
+            if chosen is not None and option.path == chosen.path and option.executable == chosen.executable:
+                var.set(str(index))
+            state = "OK" if option.usable else "problem"
+            label = f"{option.path}  ({option.source}, {state})"
+            if kind == "comfyui" and option.executable is not None:
+                label += f"\n    Python: {option.executable}"
+            ttk.Radiobutton(box, text=label, value=str(index), variable=var,
+                            command=lambda k=kind: self._software_selected(k)).grid(row=index, column=0, sticky="w", pady=2)
+        detail = []
+        if chosen is not None:
+            detail += [f"Problem: {problem}" for problem in chosen.problems]
+            detail += [f"Note: {note}" for note in chosen.notes]
+        if detail:
+            ttk.Label(box, text="\n".join(detail), style="Muted.TLabel", wraplength=700).grid(row=len(options) + 1, column=0, sticky="w", pady=(6, 0))
+        actions = ttk.Frame(box)
+        actions.grid(row=len(options) + 2, column=0, sticky="w", pady=(8, 0))
+        if kind == "llama":
+            ttk.Button(actions, text="Browse for llama-server…", command=self._browse_llama).pack(side="left")
+        else:
+            ttk.Button(actions, text="Browse for ComfyUI folder…", command=self._browse_comfyui).pack(side="left")
+            ttk.Button(actions, text="Choose Python…", command=self._browse_comfyui_python).pack(side="left", padx=8)
+            port_row = ttk.Frame(box)
+            port_row.grid(row=len(options) + 3, column=0, sticky="w", pady=(8, 0))
+            ttk.Label(port_row, text="Port").pack(side="left")
+            if self.session.comfyui_port_editable:
+                self._comfy_port_var = tk.StringVar(value=str(draft.comfyui_port))
+                ttk.Entry(port_row, textvariable=self._comfy_port_var, width=8).pack(side="left", padx=8)
+            else:
+                self._comfy_port_var = None
+                ttk.Label(port_row, text=f"{draft.comfyui_port} (from your current ComfyUI service)", style="Muted.TLabel").pack(side="left", padx=8)
+
+    def _software_selected(self, kind: str) -> None:
+        var = getattr(self, f"_{kind}_var")
+        options = getattr(self, f"_{kind}_options")
+        try:
+            option = options[int(var.get())]
+        except (ValueError, IndexError):
+            return
+        if kind == "llama":
+            self.session.draft.llama = option
+        else:
+            self.session.draft.comfyui = option
+        self._collect_software()
+        self._show("software")
+
+    def _browse_llama(self) -> None:
+        path = filedialog.askopenfilename(parent=self, title="Choose the llama-server program")
+        if path:
+            self.session.choose_llama_path(path)
+            self._collect_software()
+            self._show("software")
+
+    def _browse_comfyui(self) -> None:
+        folder = filedialog.askdirectory(parent=self, title="Choose the ComfyUI folder (contains main.py)", mustexist=True)
+        if folder:
+            self.session.choose_comfyui_path(folder)
+            self._collect_software()
+            self._show("software")
+
+    def _browse_comfyui_python(self) -> None:
+        current = self.session.draft.comfyui
+        if current is None:
+            messagebox.showinfo("Setup Wizard", "Choose the ComfyUI folder first.", parent=self)
+            return
+        python = filedialog.askopenfilename(parent=self, title="Choose the Python that runs ComfyUI", initialdir=str(current.path))
+        if python:
+            self.session.choose_comfyui_path(current.path, python)
+            self._collect_software()
+            self._show("software")
+
+    def _rediscover(self) -> None:
+        self._collect_software()
+        self.session.rediscover()
+        report = self.session.report
+        self.session.draft.llama = report.recommended(LLAMA_CPP) or self.session.draft.llama
+        self.session.draft.comfyui = report.recommended(COMFYUI) or self.session.draft.comfyui
+        self._show("software")
+
+    def _collect_software(self) -> bool:
+        var = getattr(self, "_comfy_port_var", None)
+        if self.session.draft.needs_comfyui and var is not None:
+            try:
+                self.session.draft.comfyui_port = int(var.get().strip())
+            except ValueError:
+                messagebox.showerror("Setup Wizard", "The ComfyUI port must be a number, for example 8188.", parent=self)
+                return False
+        return True
+
+    # --- Step 3: models & services --------------------------------------------------
+
+    def _llm_tasks(self) -> list[str]:
+        return [task for task in ("coding", "chat", "agent") if self.session.draft.environments.get(task)]
+
+    def _page_models(self, p) -> None:
+        draft = self.session.draft
+        scroller = ScrollableFrame(p)
+        scroller.pack(fill="both", expand=True)
+        body = scroller.body
+        body.columnconfigure(1, weight=1)
+        ttk.Label(body, text="Model folders", font=("TkDefaultFont", 12, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(body, text="One folder per line. GGUF models are found in sub-folders too.", style="Muted.TLabel").grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 4))
+        self.root_text = tk.Text(body, height=4)
+        self.root_text.grid(row=2, column=0, columnspan=3, sticky="ew")
+        self.root_text.insert("1.0", "\n".join(str(path) for path in draft.model_roots))
+        controls = ttk.Frame(body)
+        controls.grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 4))
+        ttk.Button(controls, text="Browse…", command=lambda: _append_model_root(self, self.root_text)).pack(side="left")
+        ttk.Button(controls, text="Rescan Models", command=self._rescan_models).pack(side="left", padx=8)
+        complete = sum(1 for model in self.session.models.values() if model.complete)
+        ttk.Label(body, text=f"{complete} complete model(s) available.", style="Muted.TLabel").grid(row=4, column=0, columnspan=3, sticky="w")
+
+        ttk.Separator(body).grid(row=5, column=0, columnspan=3, sticky="ew", pady=12)
+        ttk.Label(body, text="Task models", font=("TkDefaultFont", 12, "bold")).grid(row=6, column=0, columnspan=3, sticky="w")
+        ttk.Label(body, text="The same model can be used for more than one task.", style="Muted.TLabel").grid(row=7, column=0, columnspan=3, sticky="w", pady=(2, 6))
+        self.task_vars = {}
+        self.task_menus = {}
+        row = 8
+        for task in self._llm_tasks():
+            ttk.Label(body, text=ENVIRONMENT_NAMES[task]).grid(row=row, column=0, sticky="w", pady=6, padx=(0, 12))
+            var = tk.StringVar()
+            menu = ModelMenu(body, var)
+            menu.grid(row=row, column=1, columnspan=2, sticky="ew", pady=6)
+            menu.set_models(self.session.models, draft.task_models.get(task))
+            self.task_vars[task] = var
+            self.task_menus[task] = menu
+            row += 1
+
+        self.harness_menu = None
+        if draft.environments.get("agent"):
+            ttk.Separator(body).grid(row=row, column=0, columnspan=3, sticky="ew", pady=12)
+            ttk.Label(body, text="Agent harness").grid(row=row + 1, column=0, sticky="w", pady=6, padx=(0, 12))
+            self.harness_var = tk.StringVar()
+            self.harness_menu = HarnessMenu(body, self.harness_var)
+            self.harness_menu.grid(row=row + 1, column=1, columnspan=2, sticky="ew", pady=6)
+            self.harness_menu.set_harnesses(draft.harnesses, draft.agent_harness)
+            actions = ttk.Frame(body)
+            actions.grid(row=row + 2, column=1, columnspan=2, sticky="w", pady=4)
+            ttk.Button(actions, text="Scan for Harnesses", command=self._scan_harnesses).pack(side="left")
+            ttk.Button(actions, text="Add Custom Harness", command=self._add_custom_harness).pack(side="left", padx=8)
+            ttk.Label(body, text="The harness supplies the agent runtime and interface; Agent still uses the model chosen above.", style="Muted.TLabel", wraplength=650).grid(row=row + 3, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
+    def _roots_from_text(self) -> list[Path]:
+        return [Path(line.strip()).expanduser() for line in self.root_text.get("1.0", "end-1c").splitlines() if line.strip()]
+
+    def _rescan_models(self) -> None:
+        self._collect_models()
+        try:
+            self.session.scan_models(self._roots_from_text())
+        except Exception as exc:  # noqa: BLE001 - configuration UI boundary
+            messagebox.showerror("Model discovery", str(exc), parent=self)
+            return
+        self._show("models")
+
+    def _collect_models(self) -> bool:
+        draft = self.session.draft
+        roots = self._roots_from_text()
+        if roots != draft.model_roots:
+            try:
+                self.session.scan_models(roots)
+            except Exception as exc:  # noqa: BLE001 - configuration UI boundary
+                messagebox.showerror("Model discovery", str(exc), parent=self)
+                return False
+        for task, menu in self.task_menus.items():
+            draft.task_models[task] = menu.selected_id()
+        if self.harness_menu is not None:
+            draft.agent_harness = self.harness_menu.selected_id()
+        return True
+
+    def _scan_harnesses(self) -> None:
+        draft = self.session.draft
+        draft.harnesses = discover_agent_harnesses(self.session.config.services, draft.harnesses)
+        self._collect_models()
+        self._show("models")
+
+    def _store_harness(self, harness: HarnessConfig) -> None:
+        self.session.draft.harnesses[harness.id] = harness
+        self.session.draft.agent_harness = harness.id
+        self._show("models")
+
+    def _add_custom_harness(self) -> None:
+        self._collect_models()
+        CustomHarnessDialog(self, self.session.config, self.session.draft.harnesses, self._store_harness)
+
+    def _page_launch(self, p) -> None:
+        p.columnconfigure(0, weight=1)
+        p.rowconfigure(2, weight=1)
+        ttk.Label(p, text="Launch settings for the chosen models", font=("TkDefaultFont", 12, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            p,
+            text="Each chosen model needs reviewed launch settings before it can run. "
+                 "Settings are saved as soon as you press Save in the model window.",
+            style="Muted.TLabel", wraplength=760,
+        ).grid(row=1, column=0, sticky="w", pady=(4, 10))
+        self.config_model_list = tk.Listbox(p, height=10, exportselection=False)
+        self.config_model_list.grid(row=2, column=0, sticky="nsew")
+        controls = ttk.Frame(p)
+        controls.grid(row=3, column=0, sticky="ew", pady=10)
+        ttk.Button(controls, text="Configure selected model…", style="Primary.TButton", command=self._configure_selected_model).pack(side="left")
+        ttk.Button(controls, text="Refresh status", command=self._refresh_launch_list).pack(side="left", padx=8)
+        self._refresh_launch_list()
+
+    def _refresh_launch_list(self, select: int | None = None) -> None:
+        try:
+            self.session.refresh_models()
+        except Exception as exc:  # noqa: BLE001 - configuration UI boundary
             messagebox.showerror("Model configuration", str(exc), parent=self)
             return
-        if not hasattr(self, "config_model_list"):
+        if not hasattr(self, "config_model_list") or not self.config_model_list.winfo_exists():
             return
         self.config_model_list.delete(0, "end")
-        for model_id in self._selected_task_models():
-            model = self.state_data.models.get(model_id)
+        first_unconfigured = None
+        for index, model_id in enumerate(self.session.selected_models()):
+            model = self.session.models.get(model_id)
             if model is None:
-                self.config_model_list.insert("end", f"{model_id} - missing")
-                continue
-            status = "Configured for V1.0" if model.tuning_reviewed else "CONFIGURATION REQUIRED"
-            self.config_model_list.insert("end", f"{model.display_name} - {status}")
+                text = f"{model_id} - missing"
+            else:
+                text = f"{model.display_name} - {'Configured' if model.tuning_reviewed else 'CONFIGURATION REQUIRED'}"
+            if first_unconfigured is None and (model is None or not model.tuning_reviewed):
+                first_unconfigured = index
+            self.config_model_list.insert("end", text)
+        target = select if select is not None else (first_unconfigured or 0)
         if self.config_model_list.size():
-            self.config_model_list.selection_set(0)
+            self.config_model_list.selection_set(min(target, self.config_model_list.size() - 1))
 
     def _configure_selected_model(self) -> None:
         if self.model_config_window is not None:
             try:
                 if self.model_config_window.winfo_exists():
                     self.model_config_window.lift()
-                    self.model_config_window.focus_force()
                     return
             except tk.TclError:
                 pass
             self.model_config_window = None
-
-        selected_ids = self._selected_task_models()
-        if not selected_ids:
+        selected = self.session.selected_models()
+        if not selected:
             messagebox.showinfo("Model configuration", "Choose task models first.", parent=self)
             return
         index = self.config_model_list.curselection()[0] if self.config_model_list.curselection() else 0
-        index = min(index, len(selected_ids) - 1)
-        model_id = selected_ids[index]
+        model_id = selected[min(index, len(selected) - 1)]
+        if model_id not in self.session.models:
+            messagebox.showerror("Model configuration", f"Model '{model_id}' was not found. Go back and rescan.", parent=self)
+            return
         try:
-            fresh = load_app_config(self.state_data.config_dir)
-        except Exception as exc:
+            fresh = load_app_config(self.session.config_dir)
+        except Exception as exc:  # noqa: BLE001 - configuration UI boundary
             messagebox.showerror("Model configuration", str(exc), parent=self)
             return
-        root = self._root()
-        on_launch = getattr(root, "_launch_tuned_model", None)
+        # Include models from folders chosen in this wizard but not saved yet.
+        fresh = dc_replace(fresh, models=dict(self.session.models))
+        on_launch = getattr(self._root(), "_launch_tuned_model", None)
         self.model_config_window = ModelTuningWindow(
-            self, self.state_data.config_dir, fresh, self._refresh_model_configuration,
+            self, self.session.config_dir, fresh, self._refresh_launch_list,
             on_launch, model_id, setup_mode=True,
-            on_continue=self._model_configuration_continue,
-            on_back=self._model_configuration_back,
+            on_continue=self._model_window_closed, on_back=self._model_window_closed,
         )
 
-    def _model_configuration_back(self, _model_id) -> None:
+    def _model_window_closed(self, _model_id) -> None:
         self.model_config_window = None
-        self._refresh_model_configuration()
+        self._refresh_launch_list()
 
-    def _model_configuration_continue(self, _model_id) -> None:
-        self.model_config_window = None
-        self._refresh_model_configuration()
-        # Put the next unconfigured model under the selection so Save & Continue
-        # returns naturally to the setup flow without requiring the window X.
-        try:
-            fresh = load_app_config(self.state_data.config_dir)
-        except Exception:
-            return
-        selected_ids = self._selected_task_models()
-        for index, model_id in enumerate(selected_ids):
-            model = fresh.models.get(model_id)
-            if model is None or not model.tuning_reviewed:
-                self.config_model_list.selection_clear(0, "end")
-                self.config_model_list.selection_set(index)
-                self.config_model_list.see(index)
-                return
+    def _page_prompt(self, p) -> None:
+        prompt = self.session.draft.prompt
+        p.columnconfigure(1, weight=1)
+        ttk.Label(p, text="Prompt Helper", font=("TkDefaultFont", 12, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        self.prompt_enabled_var = tk.BooleanVar(value=prompt.enabled)
+        ttk.Checkbutton(p, text="Enable Prompt Helper", variable=self.prompt_enabled_var).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Label(p, text="Preferred model").grid(row=2, column=0, sticky="w", pady=5)
+        self.prompt_var = tk.StringVar()
+        self.prompt_menu = ModelMenu(p, self.prompt_var)
+        self.prompt_menu.grid(row=2, column=1, sticky="ew", pady=5)
+        self.prompt_menu.set_models(self.session.models, prompt.model, allow_none=True)
+        self.auto_var = tk.BooleanVar(value=prompt.auto_lightest)
+        ttk.Checkbutton(p, text="Automatically use lightest suitable model", variable=self.auto_var).grid(row=3, column=0, columnspan=2, sticky="w", pady=5)
+        ttk.Label(p, text="Processing").grid(row=4, column=0, sticky="nw", pady=5)
+        modes = ttk.Frame(p)
+        modes.grid(row=4, column=1, sticky="w")
+        self.mode_var = tk.StringVar(value=prompt.processing_mode)
+        for text, value in (("CPU - lowest VRAM use", "cpu"), ("GPU - faster response", "gpu"), ("Auto - balance performance and VRAM", "auto")):
+            ttk.Radiobutton(modes, text=text, value=value, variable=self.mode_var).pack(anchor="w")
+        self.keep_var = tk.BooleanVar(value=prompt.keep_loaded)
+        ttk.Checkbutton(p, text="Keep Prompt Helper loaded after use", variable=self.keep_var).grid(row=5, column=0, columnspan=2, sticky="w", pady=8)
+        ttk.Label(p, text="Advanced Prompt Helper settings are under Preferences > Settings.", style="Muted.TLabel", wraplength=620).grid(row=6, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
-    def _all_selected_models_configured(self) -> tuple[bool, list[str]]:
-        try:
-            fresh = load_app_config(self.state_data.config_dir)
-        except Exception:
-            fresh = self.state_data.config
-        missing = []
-        for model_id in self._selected_task_models():
-            model = fresh.models.get(model_id)
-            if model is None or not model.tuning_reviewed:
-                missing.append(model.display_name if model else model_id)
-        return not missing, missing
-
-    def _page_review(self, p) -> None:
-        ttk.Label(p,text="Review",font=("TkDefaultFont",12,"bold")).pack(anchor="w")
-        self.review_text=tk.Text(p,height=18,wrap="word",state="disabled"); self.review_text.pack(fill="both",expand=True,pady=10)
-
-    def _scan(self) -> bool:
-        try:
-            roots=tuple(Path(x.strip()).expanduser() for x in self.root_text.get("1.0","end-1c").splitlines() if x.strip())
-            if not roots: raise ValueError("At least one model root is required")
-            self.state_data.scan(roots)
-        except Exception as exc:
-            messagebox.showerror("Model discovery",str(exc),parent=self); return False
-        self._fill_model_list()
-        for task,menu in self.task_menus.items(): menu.set_models(self.state_data.models,menu.selected_id() or self.state_data.task_models.get(task))
-        if hasattr(self,"prompt_menu"): self.prompt_menu.set_models(self.state_data.models,self.prompt_menu.selected_id() or self.state_data.prompt_model,allow_none=True)
-
-        complete = sum(1 for model in self.state_data.models.values() if model.complete)
-        missing_configured = sum(
-            1 for model in self.state_data.models.values()
-            if not model.complete and not model.discovered
-        )
-        incomplete_discovered = sum(
-            1 for model in self.state_data.models.values()
-            if not model.complete and model.discovered
-        )
-        detail = [f"{complete} complete"]
-        if missing_configured:
-            detail.append(f"{missing_configured} configured path(s) missing")
-        if incomplete_discovered:
-            detail.append(f"{incomplete_discovered} incomplete discovery result(s)")
-        self.status_var.set("Models: " + "; ".join(detail))
-
-        if complete == 0:
-            messagebox.showwarning(
-                "No complete GGUF models found",
-                "AI Control Centre did not find a complete GGUF model in the model roots shown above.\n\n"
-                "Missing configured model paths do not count as discovered models. "
-                "Choose the correct model folder or install/copy a GGUF model there, then Rescan Models.\n\n"
-                "Setup will remain incomplete until at least one complete model is available for Coding and Chat.",
-                parent=self,
-            )
-            return False
+    def _collect_prompt(self) -> bool:
+        prompt = self.session.draft.prompt
+        prompt.enabled = bool(self.prompt_enabled_var.get())
+        prompt.model = self.prompt_menu.selected_id()
+        prompt.auto_lightest = bool(self.auto_var.get())
+        prompt.processing_mode = self.mode_var.get()
+        prompt.keep_loaded = bool(self.keep_var.get())
         return True
 
-    def _fill_model_list(self) -> None:
-        if not hasattr(self,"model_list"): return
-        self.model_list.delete(0,"end")
-        for model in self.state_data.models.values():
-            if model.complete:
-                prefix = "[READY]"
-            elif not model.discovered:
-                prefix = "[MISSING CONFIG]"
-            else:
-                prefix = "[INCOMPLETE]"
-            self.model_list.insert("end", f"{prefix} {_model_label(model)}")
+    # --- Step 4: review --------------------------------------------------------------
 
-    def _show_page(self,index:int) -> None:
-        self.page=index
-        for i,frame in enumerate(self.pages):
-            if i==index: frame.tkraise()
-        self.back.configure(state="disabled" if index==0 else "normal")
-        self.next.configure(text="Save & Finish" if index==len(self.pages)-1 else "Next")
-        if index==3: self._refresh_model_configuration()
-        if index==len(self.pages)-1: self._update_review()
-
-    def _back(self) -> None:
-        if self.page>0: self._show_page(self.page-1)
-
-    def _next(self) -> None:
-        if self.page==1 and not self._scan():
-            return
-        if self.page==2:
-            for task in ("coding", "chat"):
-                menu = self.task_menus[task]
-                if menu.selected_id() is None:
-                    messagebox.showerror("Setup Wizard", f"Choose a model for {task.title()}", parent=self); return
-            if self.agent_enabled_var.get():
-                if self.task_menus["agent"].selected_id() is None:
-                    messagebox.showerror("Setup Wizard", "Choose a model for Agent", parent=self); return
-                if self.harness_menu is None or self.harness_menu.selected_id() is None:
-                    messagebox.showerror("Setup Wizard", "Choose an Agent harness, scan for one, add a custom harness, or disable Agent setup.", parent=self); return
-        if self.page==3:
-            ok, missing = self._all_selected_models_configured()
-            if not ok:
-                messagebox.showerror("Setup Wizard", "Configure these selected models before continuing:\n\n" + "\n".join(missing), parent=self); return
-        if self.page==len(self.pages)-1:
-            self._finish(); return
-        self._show_page(self.page+1)
-
-    def _update_review(self) -> None:
-        task_lines=[]
-        for task in ("coding", "chat"):
-            task_lines.append(f"{task.title()}: {self.task_menus[task].selected_id() or 'Not selected'}")
-        if self.agent_enabled_var.get():
-            task_lines.append(f"Agent: {self.task_menus['agent'].selected_id() or 'Not selected'}")
-            harness = self.harness_menu.selected_id() if self.harness_menu is not None else None
-            harness_name = self.state_data.harnesses[harness].display_name if harness in self.state_data.harnesses else "Not selected"
-        else:
-            task_lines.append("Agent: Not configured")
-            harness_name = "Not configured"
-        if self.prompt_enabled_var.get():
-            helper="Automatic lightest model" if self.auto_var.get() else (self.prompt_menu.selected_id() or "Not selected")
-            prompt_text=f"Enabled\n  Model: {helper}\n  Processing: {self.mode_var.get().upper()}\n  Keep loaded: {'Yes' if self.keep_var.get() else 'No'}"
-        else:
-            prompt_text="Disabled"
-        text=("Model roots:\n  " + "\n  ".join(str(p) for p in self.state_data.roots) + "\n\nTask defaults:\n  " + "\n  ".join(task_lines) + f"\n\nAgent harness:\n  {harness_name}\n\nPrompt Helper:\n  {prompt_text}")
-        self.review_text.configure(state="normal"); self.review_text.delete("1.0","end"); self.review_text.insert("1.0",text); self.review_text.configure(state="disabled")
+    def _page_review(self, p) -> None:
+        p.columnconfigure(0, weight=1)
+        p.rowconfigure(1, weight=1)
+        review = self.session.review()
+        if review.switched_off:
+            names = ", ".join(ENVIRONMENT_NAMES[task] for task in review.switched_off)
+            ttk.Label(p, text=f"{names} will be saved switched off until the problems below are fixed.", wraplength=760).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        text = tk.Text(p, height=18, wrap="word")
+        text.grid(row=1, column=0, sticky="nsew")
+        text.insert("1.0", review.as_text())
+        text.configure(state="disabled")
 
     def _finish(self) -> None:
+        review = self.session.review()
+        if review.switched_off:
+            names = ", ".join(ENVIRONMENT_NAMES[task] for task in review.switched_off)
+            if not messagebox.askyesno("Setup Wizard", f"Save now with {names} switched off?", parent=self):
+                return
         try:
-            roots=tuple(Path(x.strip()).expanduser() for x in self.root_text.get("1.0","end-1c").splitlines() if x.strip())
-            if not roots: raise ValueError("At least one model root is required")
-            self.state_data.roots=list(roots)
-            for task in ("coding", "chat"):
-                model=self.task_menus[task].selected_id()
-                if model is None: raise ValueError(f"Choose a model for {task.title()}")
-                self.state_data.task_models[task]=model
-            if self.agent_enabled_var.get():
-                model=self.task_menus["agent"].selected_id()
-                if model is None: raise ValueError("Choose a model for Agent")
-                harness=self.harness_menu.selected_id() if self.harness_menu is not None else None
-                if harness is None: raise ValueError("Choose an Agent harness or disable Agent setup")
-                self.state_data.task_models["agent"]=model
-                self.state_data.agent_harness=harness
-            else:
-                self.state_data.task_models["agent"]=None
-                self.state_data.agent_harness=None
-            ok, missing = self._all_selected_models_configured()
-            if not ok: raise ValueError("Configure selected models before finishing: " + ", ".join(missing))
-            self.state_data.prompt_enabled=self.prompt_enabled_var.get()
-            self.state_data.prompt_model=self.prompt_menu.selected_id() if self.state_data.prompt_enabled else None
-            self.state_data.auto_lightest=self.auto_var.get()
-            if self.state_data.prompt_enabled and not self.state_data.auto_lightest and self.state_data.prompt_model is None: raise ValueError("Choose a Prompt Helper model")
-            self.state_data.processing_mode=self.mode_var.get(); self.state_data.keep_loaded=self.keep_var.get()
-            self.state_data.save()
-        except Exception as exc:
-            messagebox.showerror("Setup Wizard",str(exc),parent=self); return
-        self.on_saved(); self.destroy()
+            self.session.apply()
+        except SetupError as exc:
+            messagebox.showerror("Setup Wizard", str(exc), parent=self)
+            return
+        self.on_saved()
+        self.destroy()
