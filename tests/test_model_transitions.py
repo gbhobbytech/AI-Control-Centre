@@ -8,7 +8,7 @@ import pytest
 
 from ai_control_centre.config import AppConfig, Settings
 from ai_control_centre.domain import HealthCheckConfig, ModelConfig, ProcessServiceConfig, ProfileConfig, ServiceState
-from ai_control_centre.manager import ServiceManager
+from ai_control_centre.manager import ModelChangeError, ServiceManager
 
 
 def _free_port() -> int:
@@ -86,8 +86,12 @@ def test_model_change_requires_explicit_permission(tmp_path: Path):
     try:
         manager.start_profile("chat", open_interface=False)
         assert manager.running_model_id("llama") == "chat_model"
-        with pytest.raises(RuntimeError, match="--replace-model"):
+        with pytest.raises(ModelChangeError, match="--replace-model") as info:
             manager.start_profile("coding", open_interface=False)
+        plan = info.value.plan
+        assert plan.reason == "model" and not plan.blocked
+        assert [stop.service_id for stop in plan.stops] == ["llama"]
+        assert "These will be stopped first" in plan.describe()
         assert manager.running_model_id("llama") == "chat_model"
     finally:
         manager.stop_all()

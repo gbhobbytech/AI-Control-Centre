@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import replace
+from collections.abc import Callable, Iterable
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 
 from .config import AppConfig
 from .docker_service import DockerService
@@ -18,6 +19,71 @@ _ACTIVE_STATES = {
     ServiceState.RUNNING_NOT_READY,
     ServiceState.EXTERNAL,
 }
+
+
+@dataclass(frozen=True)
+class PlannedStop:
+    service_id: str
+    display_name: str
+    model: str | None = None  # display name of the loaded model, if known
+
+    def describe(self) -> str:
+        return f"{self.display_name} (model {self.model})" if self.model else self.display_name
+
+
+@dataclass(frozen=True)
+class SwitchPlan:
+    """What starting a task or service would stop first, in plain terms."""
+
+    target: str
+    reason: str  # "conflict": shares the GPU or another resource; "model": model must change
+    stops: tuple[PlannedStop, ...]  # in the order they would be stopped
+    external: tuple[str, ...] = ()  # display names AI Control Centre will not stop
+
+    @property
+    def blocked(self) -> bool:
+        return bool(self.external)
+
+    def describe(self) -> str:
+        if self.blocked:
+            names = ", ".join(self.external)
+            return (
+                f"{self.target} cannot start: {names} "
+                f"{'was' if len(self.external) == 1 else 'were'} started outside AI Control Centre "
+                f"and {'is' if len(self.external) == 1 else 'are'} using a resource {self.target} needs. "
+                "AI Control Centre will not stop programs it did not start. "
+                "Close it yourself, then try again."
+            )
+        if self.reason == "model":
+            lead = f"{self.target} needs a different model or launch settings than the one running."
+        else:
+            lead = f"{self.target} needs the GPU (or another shared resource) that running services are using."
+        items = "\n".join(f"  - {stop.describe()}" for stop in self.stops)
+        return f"{lead}\n\nThese will be stopped first, in this order:\n{items}\n\nThen {self.target} will start."
+
+
+class SwitchRequired(RuntimeError):
+    """Starting needs other services stopped first. The message keeps the CLI wording."""
+
+    def __init__(self, message: str, plan: SwitchPlan):
+        super().__init__(message)
+        self.plan = plan
+
+
+class ConflictError(SwitchRequired):
+    pass
+
+
+class ModelChangeError(SwitchRequired):
+    pass
+
+
+class TransitionError(RuntimeError):
+    """A switch stopped services and then could not complete."""
+
+    def __init__(self, message: str, stopped: tuple[str, ...] = ()):
+        super().__init__(message)
+        self.stopped = stopped
 
 
 class ServiceManager:
@@ -216,6 +282,25 @@ class ServiceManager:
                     changed = True
         return closure
 
+    def _display(self, service_id: str) -> str:
+        return self.config.services[service_id].display_name
+
+    def _planned_stop(self, service_id: str) -> PlannedStop:
+        model_id = self.running_model_id(service_id)
+        model = self.config.models.get(model_id) if model_id else None
+        return PlannedStop(service_id, self._display(service_id), model.display_name if model else model_id)
+
+    def _stop_verified(self, service_id: str) -> ServiceStatus:
+        """Stop a service and confirm it has really stopped before anything else starts."""
+        result = self.get(service_id).stop()
+        after = self.get(service_id).status()
+        if result.state != ServiceState.STOPPED or after.state in _ACTIVE_STATES:
+            raise TransitionError(
+                f"{self._display(service_id)} did not stop ({after.state.value}: {after.detail}), "
+                "so nothing else was started. Check its logs, then try again.",
+            )
+        return result
+
     def _requested_conflict_groups(
         self, requested: Iterable[str]
     ) -> dict[str, list[str]]:
@@ -230,6 +315,7 @@ class ServiceManager:
         requested: Iterable[str],
         *,
         stop_conflicts: bool,
+        target: str | None = None,
     ) -> list[tuple[str, ServiceStatus]]:
         requested_order = self._dependency_order(requested)
         requested_set = set(requested_order)
@@ -289,29 +375,39 @@ class ServiceManager:
             for service_id, status in active_transition
             if status.state == ServiceState.EXTERNAL
         ]
+        active_ids = {service_id for service_id, _ in active_transition}
+        stop_order = [sid for sid in reversed(self._dependency_order(transition_set)) if sid in active_ids]
+        plan = SwitchPlan(
+            target=target or ", ".join(self._display(sid) for sid in requested_order),
+            reason="conflict",
+            stops=tuple(self._planned_stop(sid) for sid in stop_order if sid not in external),
+            external=tuple(self._display(sid) for sid in sorted(external)),
+        )
         if external:
             names = ", ".join(sorted(external))
-            raise RuntimeError(
+            raise ConflictError(
                 "Resource conflict involves externally started service(s) "
-                f"{names}; refusing to stop them automatically"
+                f"{names}; refusing to stop them automatically",
+                plan,
             )
 
         if not stop_conflicts:
             names = ", ".join(sorted(service_id for service_id, _ in active_transition))
-            raise RuntimeError(
+            raise ConflictError(
                 f"Resource conflict with running launcher-owned service(s): {names}. "
-                "Retry with --stop-conflicts to stop them in dependency-safe order."
+                "Retry with --stop-conflicts to stop them in dependency-safe order.",
+                plan,
             )
 
         results: list[tuple[str, ServiceStatus]] = []
-        ordered = self._dependency_order(transition_set)
-        for service_id in reversed(ordered):
+        for service_id in stop_order:
             status = self.get(service_id).status()
             if status.state in {ServiceState.READY, ServiceState.RUNNING_NOT_READY}:
-                results.append((service_id, self.get(service_id).stop()))
+                results.append((service_id, self._stop_verified(service_id)))
             elif status.state == ServiceState.EXTERNAL:
-                raise RuntimeError(
-                    f"{service_id} became externally owned during conflict resolution; aborting transition"
+                raise TransitionError(
+                    f"{service_id} became externally owned during conflict resolution; aborting transition",
+                    tuple(sid for sid, _ in results),
                 )
         return results
 
@@ -337,9 +433,13 @@ class ServiceManager:
         for service_id in model_services:
             status = self.get(service_id).status()
             if status.state == ServiceState.EXTERNAL:
-                raise RuntimeError(
+                raise ModelChangeError(
                     f"{self.config.services[service_id].display_name} is externally started; "
-                    "cannot safely change its model"
+                    "cannot safely change its model",
+                    SwitchPlan(
+                        target=self._display(service_id), reason="model", stops=(),
+                        external=(self._display(service_id),),
+                    ),
                 )
             if status.state not in {ServiceState.READY, ServiceState.RUNNING_NOT_READY}:
                 continue
@@ -358,12 +458,6 @@ class ServiceManager:
             f"{self.config.services[sid].display_name} (model or launch settings changed: {requested_model})"
             for sid in mismatched
         )
-        if not replace_model:
-            raise RuntimeError(
-                f"Model change required for {names}. "
-                "Retry with --replace-model to stop affected launcher-owned services and reload safely."
-            )
-
         transition_set = self._dependent_closure(mismatched)
         active_transition: list[tuple[str, ServiceStatus]] = []
         for service_id in transition_set:
@@ -376,19 +470,35 @@ class ServiceManager:
             for service_id, status in active_transition
             if status.state == ServiceState.EXTERNAL
         ]
+        active_ids = {service_id for service_id, _ in active_transition}
+        stop_order = [sid for sid in reversed(self._dependency_order(transition_set)) if sid in active_ids]
+        requested_model_obj = self.config.models.get(requested_model) if requested_model else None
+        plan = SwitchPlan(
+            target=f"{', '.join(self._display(sid) for sid in mismatched)} with "
+                   f"{requested_model_obj.display_name if requested_model_obj else requested_model}",
+            reason="model",
+            stops=tuple(self._planned_stop(sid) for sid in stop_order if sid not in external),
+            external=tuple(self._display(sid) for sid in sorted(external)),
+        )
         if external:
-            names = ", ".join(sorted(external))
-            raise RuntimeError(
+            external_names = ", ".join(sorted(external))
+            raise ModelChangeError(
                 "Model transition depends on externally started service(s) "
-                f"{names}; refusing to stop them automatically"
+                f"{external_names}; refusing to stop them automatically",
+                plan,
+            )
+        if not replace_model:
+            raise ModelChangeError(
+                f"Model change required for {names}. "
+                "Retry with --replace-model to stop affected launcher-owned services and reload safely.",
+                plan,
             )
 
         results: list[tuple[str, ServiceStatus]] = []
-        ordered = self._dependency_order(transition_set)
-        for service_id in reversed(ordered):
+        for service_id in stop_order:
             status = self.get(service_id).status()
             if status.state in {ServiceState.READY, ServiceState.RUNNING_NOT_READY}:
-                results.append((service_id, self.get(service_id).stop()))
+                results.append((service_id, self._stop_verified(service_id)))
         return results
 
     def start_service(
@@ -398,6 +508,7 @@ class ServiceManager:
         stop_conflicts: bool = False,
         replace_model: bool = False,
         model_id: str | None = None,
+        after_stops: Callable[[list[tuple[str, ServiceStatus]]], None] | None = None,
     ) -> list[tuple[str, ServiceStatus]]:
         requested_order = self._dependency_order([service_id])
         target = self.config.services[service_id]
@@ -437,7 +548,7 @@ class ServiceManager:
         for sid in requested_order:
             self._controller_for_start(sid, model_id)
         results = self._prepare_conflicts(
-            requested_order, stop_conflicts=stop_conflicts
+            requested_order, stop_conflicts=stop_conflicts, target=self._display(service_id)
         )
         results.extend(
             self._prepare_model_switch(
@@ -446,19 +557,45 @@ class ServiceManager:
                 replace_model=replace_model,
             )
         )
-        for item in requested_order:
-            status = self.get(item).status()
-            if status.state == ServiceState.EXTERNAL:
-                results.append((item, status))
-                continue
-            controller = self._controller_for_start(item, model_id)
-            result = controller.start()
-            results.append((item, result))
-            if result.state != ServiceState.READY and not (
-                result.state == ServiceState.RUNNING_NOT_READY and controller.config.health is None
-            ):
-                raise RuntimeError(f"{item} failed to become usable: {result.detail}")
+        self._after_stops(results, after_stops)
+        with self._reporting_switch(results):
+            for item in requested_order:
+                status = self.get(item).status()
+                if status.state == ServiceState.EXTERNAL:
+                    results.append((item, status))
+                    continue
+                controller = self._controller_for_start(item, model_id)
+                result = controller.start()
+                results.append((item, result))
+                if result.state != ServiceState.READY and not (
+                    result.state == ServiceState.RUNNING_NOT_READY and controller.config.health is None
+                ):
+                    raise RuntimeError(f"{item} failed to become usable: {result.detail}")
         return results
+
+    @staticmethod
+    def _after_stops(results, callback) -> None:
+        if callback is not None and any(status.state == ServiceState.STOPPED for _, status in results):
+            callback(list(results))
+
+    @contextmanager
+    def _reporting_switch(self, results):
+        """Make a failure after stopping services say what was already stopped."""
+        stopped = tuple(
+            self._display(sid) for sid, status in results if status.state == ServiceState.STOPPED
+        )
+        try:
+            yield
+        except TransitionError:
+            raise
+        except Exception as exc:
+            if not stopped:
+                raise
+            raise TransitionError(
+                f"{exc}\n\nAlready stopped for this switch: {', '.join(stopped)}. "
+                "It was not restarted automatically.",
+                stopped,
+            ) from exc
 
     def stop_service(self, service_id: str) -> ServiceStatus:
         return self.get(service_id).stop()
@@ -489,6 +626,7 @@ class ServiceManager:
         stop_conflicts: bool = False,
         replace_model: bool = False,
         model_id: str | None = None,
+        after_stops: Callable[[list[tuple[str, ServiceStatus]]], None] | None = None,
     ) -> list[tuple[str, ServiceStatus]]:
         try:
             profile = self.config.profiles[profile_id]
@@ -500,7 +638,7 @@ class ServiceManager:
         for sid in requested_order:
             self._controller_for_start(sid, selected_model)
         results = self._prepare_conflicts(
-            requested_order, stop_conflicts=stop_conflicts
+            requested_order, stop_conflicts=stop_conflicts, target=profile.display_name
         )
         results.extend(
             self._prepare_model_switch(
@@ -509,21 +647,23 @@ class ServiceManager:
                 replace_model=replace_model,
             )
         )
+        self._after_stops(results, after_stops)
 
-        for service_id in requested_order:
-            current = self.get(service_id).status()
-            if current.state == ServiceState.EXTERNAL:
-                results.append((service_id, current))
-                continue
-            controller = self._controller_for_start(service_id, selected_model)
-            result = controller.start()
-            results.append((service_id, result))
-            if result.state != ServiceState.READY and not (
-                result.state == ServiceState.RUNNING_NOT_READY and controller.config.health is None
-            ):
-                raise RuntimeError(
-                    f"Profile '{profile.display_name}' stopped because {service_id} failed: {result.detail}"
-                )
+        with self._reporting_switch(results):
+            for service_id in requested_order:
+                current = self.get(service_id).status()
+                if current.state == ServiceState.EXTERNAL:
+                    results.append((service_id, current))
+                    continue
+                controller = self._controller_for_start(service_id, selected_model)
+                result = controller.start()
+                results.append((service_id, result))
+                if result.state != ServiceState.READY and not (
+                    result.state == ServiceState.RUNNING_NOT_READY and controller.config.health is None
+                ):
+                    raise RuntimeError(
+                        f"Profile '{profile.display_name}' stopped because {service_id} failed: {result.detail}"
+                    )
 
         open_service = self._profile_open_service(profile)
         if open_interface and open_service:
