@@ -974,7 +974,16 @@ class SetupWizard(tk.Toplevel):
         "review": (4, "Review"),
     }
 
-    def __init__(self, parent, config_dir: Path, config: AppConfig, on_saved, *, upgrade_review: bool | None = None):
+    def __init__(
+        self,
+        parent,
+        config_dir: Path,
+        config: AppConfig,
+        on_saved,
+        *,
+        upgrade_review: bool | None = None,
+        start_page: str | None = None,
+    ):
         super().__init__(parent)
         self.title("AI Control Centre Setup Wizard")
         self.transient(parent)
@@ -988,13 +997,16 @@ class SetupWizard(tk.Toplevel):
             return
         self.grab_set()
         self.show_welcome = self.session.upgrade_review_pending if upgrade_review is None else upgrade_review
+        if start_page is not None:
+            self.show_welcome = False  # opened to fix a specific problem
         self.page = ""
         self.status_var = tk.StringVar(value="")
         self.step_var = tk.StringVar(value="")
         self.model_config_window: ModelTuningWindow | None = None
         self.env_vars = {task: tk.BooleanVar(value=self.session.draft.environments.get(task, False)) for task in TASK_IDS}
         self._build()
-        self._show(self._sequence()[0])
+        sequence = self._sequence()
+        self._show(start_page if start_page in sequence else sequence[0])
         style_classic(self)
         fit_window_to_screen(self, preferred_width=900, preferred_height=760, min_width=760, min_height=560, margin_y=110)
         self.protocol("WM_DELETE_WINDOW", self._close_setup)

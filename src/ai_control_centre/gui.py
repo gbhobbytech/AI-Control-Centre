@@ -16,7 +16,8 @@ except ImportError as exc:  # pragma: no cover - depends on host packaging
 
 from .config import ConfigError, load_app_config
 from .environments import evaluate_profile
-from .feedback import STATE_LABELS
+from .ui_utils import HoverTip
+from .feedback import EXTERNAL_DETAIL, STATE_LABELS, attention_items, attention_text, failure_advice, task_tooltip
 from .domain import ProcessServiceConfig, ServiceState, TASK_IDS
 from .manager import ConflictError, ModelChangeError, ServiceManager, SwitchRequired
 from .harnesses import visible_service_ids
@@ -60,6 +61,7 @@ class ControlCentreWindow(tk.Tk):
         self.status_var = tk.StringVar(value="Ready - choose a task")
         self.model_var = tk.StringVar(value=_TASK_DEFAULT)
         self.task_buttons = {}
+        self.task_tips = {}
         self.state_labels = {}
         self.service_vars: dict[str, tuple[tk.StringVar, tk.StringVar]] = {}
         self.service_rows: dict[str, tuple[tk.Widget, ...]] = {}
@@ -151,6 +153,7 @@ class ControlCentreWindow(tk.Tk):
                 )
             button.configure(style='Task.TButton')
             self.task_buttons[profile_id] = button
+            self.task_tips[profile_id] = HoverTip(button, "")
             button.grid(
                 row=0, column=column, sticky="ew", padx=(0 if column == 0 else 4, 4)
             )
@@ -159,8 +162,22 @@ class ControlCentreWindow(tk.Tk):
             row=0, column=4, sticky="ew", padx=(4, 0)
         )
 
+        # Shown only when an environment the user turned on cannot run.
+        self.attention_row = ttk.Frame(task)
+        self.attention_row.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(10, 0))
+        self.attention_row.columnconfigure(0, weight=1)
+        self.attention_var = tk.StringVar(value="")
+        ttk.Label(
+            self.attention_row, textvariable=self.attention_var, style="Starting.TLabel", wraplength=560
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Button(
+            self.attention_row, text="Fix in Setup…", style="Quiet.TButton", command=self._fix_in_setup
+        ).grid(row=0, column=1, sticky="e", padx=(8, 0))
+        self.attention_row.grid_remove()
+        self._attention_page = None
+
         model_row = ttk.Frame(task)
-        model_row.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(12, 0))
+        model_row.grid(row=2, column=0, columnspan=5, sticky="ew", pady=(12, 0))
         model_row.columnconfigure(1, weight=1)
         ttk.Label(model_row, text="LLM override:").grid(
             row=0, column=0, sticky="w", padx=(0, 8)
@@ -556,8 +573,11 @@ class ControlCentreWindow(tk.Tk):
                 return False
         return True
 
-    def _open_setup_wizard(self) -> None:
-        SetupWizard(self, self.config_dir, self.config_data, self._reload_configuration)
+    def _open_setup_wizard(self, start_page: str | None = None) -> None:
+        SetupWizard(self, self.config_dir, self.config_data, self._reload_configuration, start_page=start_page)
+
+    def _fix_in_setup(self) -> None:
+        self._open_setup_wizard(self._attention_page)
 
     def _rescan_models(self) -> None:
         before = set(self.config_data.models)
@@ -599,9 +619,21 @@ class ControlCentreWindow(tk.Tk):
     def _update_capabilities(self) -> None:
         self.capability_reasons = {}
         for profile_id, button in self.task_buttons.items():
-            available, reason = self._task_capability(profile_id)
-            self.capability_reasons[profile_id] = reason
-            button.configure(state="normal" if available else "disabled")
+            status = evaluate_profile(self.config_data, profile_id)
+            self.capability_reasons[profile_id] = status.reason
+            button.configure(state="normal" if status.available else "disabled")
+            tip = self.task_tips.get(profile_id)
+            if tip is not None:
+                tip.text = task_tooltip(status)
+        items = attention_items(self.config_data)
+        if items:
+            self.attention_var.set(attention_text(items))
+            self._attention_page = items[0].setup_page
+            self.attention_row.grid()
+        else:
+            self.attention_var.set("")
+            self._attention_page = None
+            self.attention_row.grid_remove()
         prompt_available, prompt_reason = self._prompt_helper_capability()
         self.capability_reasons["prompt_helper"] = prompt_reason
         if hasattr(self, "improve_button"):
@@ -864,7 +896,7 @@ class ControlCentreWindow(tk.Tk):
         if status.state == ServiceState.STOPPED:
             return state, "Not running"
         if status.state == ServiceState.EXTERNAL:
-            return "Ready (external)", "Responding; not controlled by AI Control Centre"
+            return "Ready (external)", EXTERNAL_DETAIL
         if status.state == ServiceState.RUNNING_NOT_READY:
             if service_id == self.prompt_config.service:
                 model_id = self.manager.running_model_id(service_id)
@@ -881,6 +913,19 @@ class ControlCentreWindow(tk.Tk):
         if status.state == ServiceState.ERROR:
             return state, status.detail
         return state, status.detail
+
+    def _show_failure(self, exc: Exception) -> None:
+        """Name the affected service, suggest a next step, and offer its log or Setup."""
+        advice = failure_advice(exc, self.config_data)
+        text = advice.as_text()
+        if advice.setup_page:
+            if messagebox.askyesno(advice.title, text + "\n\nOpen Setup now?", parent=self):
+                self._open_setup_wizard(advice.setup_page)
+        elif advice.log_path is not None and advice.service_id in self.config_data.services:
+            if messagebox.askyesno(advice.title, text + "\n\nShow its log now?", parent=self):
+                self._show_logs(advice.service_id)
+        else:
+            messagebox.showerror(advice.title, text, parent=self)
 
     def _after_switch_stops(self, results) -> None:
         """Runs on the worker thread after a switch stopped services, before starting.
@@ -1123,7 +1168,7 @@ class ControlCentreWindow(tk.Tk):
                     else:
                         self._set_active_task('custom')
                         self.status_var.set(f"Could not complete operation: {exc}")
-                        messagebox.showerror("AI Control Centre", str(exc), parent=self)
+                        self._show_failure(exc)
                     self._refresh_all()
                 elif kind == "prompt_success":
                     self.refined_text.delete("1.0", "end")

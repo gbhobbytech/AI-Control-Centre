@@ -76,6 +76,7 @@ class FailureAdvice:
     hint: str
     log_path: Path | None
     setup_page: str | None
+    service_id: str | None = None
 
     def as_text(self) -> str:
         return f"{self.message}\n\n{self.hint}" if self.hint else self.message
@@ -127,4 +128,6 @@ def failure_advice(exc: Exception, config: AppConfig) -> FailureAdvice:
         hint = ""
 
     title = f"{name} could not start" if name else "AI Control Centre"
-    return FailureAdvice(title=title, message=str(exc), hint=hint, log_path=log_path, setup_page=setup_page)
+    return FailureAdvice(
+        title=title, message=str(exc), hint=hint, log_path=log_path, setup_page=setup_page, service_id=service_id
+    )

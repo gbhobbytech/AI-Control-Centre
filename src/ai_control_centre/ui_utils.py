@@ -118,7 +118,7 @@ class HoverTip:
         tip = tk.Toplevel(self.widget)
         tip.wm_overrideredirect(True)
         tip.wm_geometry(f"+{x}+{y}")
-        ttk.Label(tip, text=self.text, padding=(8, 5), style="Tooltip.TLabel").pack()
+        ttk.Label(tip, text=self.text, padding=(8, 5), style="Tooltip.TLabel", wraplength=380).pack()
         self._tip = tip
 
     def _hide(self, _event=None):
