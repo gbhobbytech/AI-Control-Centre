@@ -897,6 +897,65 @@ class SettingsWindow(tk.Toplevel):
         for key, value in DEFAULT_APPEARANCE.items():
             self.appearance_vars[key].set(str(value))
 
+class ChoiceList(ttk.Frame):
+    """A short in-window list for choosing one item.
+
+    Used by the Setup Wizard instead of drop-down menus: on some Linux
+    desktops (seen on Pop!_OS 24.04) Tk pop-up menus open detached from the
+    window, at the corner of the screen. A list inside the window cannot.
+    """
+
+    def __init__(self, parent, *, height: int = 4):
+        super().__init__(parent)
+        self.columnconfigure(0, weight=1)
+        self._height = height
+        self.listbox = tk.Listbox(self, height=height, exportselection=False, activestyle="none")
+        self.listbox.grid(row=0, column=0, sticky="ew")
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.listbox.yview)
+        self.listbox.configure(yscrollcommand=self.scrollbar.set)
+        self._ids: list[str | None] = []
+
+    def _fill(self, items: list[tuple[str | None, str]], selected_id: str | None, empty_text: str) -> None:
+        self.listbox.delete(0, "end")
+        self._ids = []
+        if not items:
+            self.listbox.insert("end", empty_text)
+            self.listbox.configure(height=1)
+            self.scrollbar.grid_remove()
+            return
+        for item_id, label in items:
+            self.listbox.insert("end", label)
+            self._ids.append(item_id)
+        self.listbox.configure(height=min(self._height, len(items)))
+        if len(items) > self._height:
+            self.scrollbar.grid(row=0, column=1, sticky="ns")
+        else:
+            self.scrollbar.grid_remove()
+        self.select(selected_id)
+
+    def set_models(self, models, selected_id: str | None, *, allow_none: bool = False) -> None:
+        items: list[tuple[str | None, str]] = [(None, "None")] if allow_none else []
+        items += [(model_id, _model_label(model)) for model_id, model in models.items() if model.complete]
+        self._fill(items, selected_id, "No complete models found - check the model folders above.")
+
+    def set_harnesses(self, harnesses, selected_id: str | None) -> None:
+        items = [(harness_id, harness.display_name) for harness_id, harness in harnesses.items()]
+        self._fill(items, selected_id, "No harness configured - scan or add one below.")
+
+    def select(self, item_id: str | None) -> None:
+        self.listbox.selection_clear(0, "end")
+        if item_id in self._ids:
+            index = self._ids.index(item_id)
+            self.listbox.selection_set(index)
+            self.listbox.see(index)
+
+    def selected_id(self) -> str | None:
+        selection = self.listbox.curselection()
+        if not selection or selection[0] >= len(self._ids):
+            return None
+        return self._ids[selection[0]]
+
+
 class SetupWizard(tk.Toplevel):
     """Task-oriented Setup Wizard: environments, software, models, review.
 
@@ -1244,25 +1303,21 @@ class SetupWizard(tk.Toplevel):
         ttk.Separator(body).grid(row=5, column=0, columnspan=3, sticky="ew", pady=12)
         ttk.Label(body, text="Task models", font=("TkDefaultFont", 12, "bold")).grid(row=6, column=0, columnspan=3, sticky="w")
         ttk.Label(body, text="The same model can be used for more than one task.", style="Muted.TLabel").grid(row=7, column=0, columnspan=3, sticky="w", pady=(2, 6))
-        self.task_vars = {}
         self.task_menus = {}
         row = 8
         for task in self._llm_tasks():
-            ttk.Label(body, text=ENVIRONMENT_NAMES[task]).grid(row=row, column=0, sticky="w", pady=6, padx=(0, 12))
-            var = tk.StringVar()
-            menu = ModelMenu(body, var)
+            ttk.Label(body, text=ENVIRONMENT_NAMES[task]).grid(row=row, column=0, sticky="nw", pady=6, padx=(0, 12))
+            menu = ChoiceList(body)
             menu.grid(row=row, column=1, columnspan=2, sticky="ew", pady=6)
             menu.set_models(self.session.models, draft.task_models.get(task))
-            self.task_vars[task] = var
             self.task_menus[task] = menu
             row += 1
 
         self.harness_menu = None
         if draft.environments.get("agent"):
             ttk.Separator(body).grid(row=row, column=0, columnspan=3, sticky="ew", pady=12)
-            ttk.Label(body, text="Agent harness").grid(row=row + 1, column=0, sticky="w", pady=6, padx=(0, 12))
-            self.harness_var = tk.StringVar()
-            self.harness_menu = HarnessMenu(body, self.harness_var)
+            ttk.Label(body, text="Agent harness").grid(row=row + 1, column=0, sticky="nw", pady=6, padx=(0, 12))
+            self.harness_menu = ChoiceList(body)
             self.harness_menu.grid(row=row + 1, column=1, columnspan=2, sticky="ew", pady=6)
             self.harness_menu.set_harnesses(draft.harnesses, draft.agent_harness)
             actions = ttk.Frame(body)
@@ -1396,9 +1451,8 @@ class SetupWizard(tk.Toplevel):
         ttk.Label(p, text="Prompt Helper", font=("TkDefaultFont", 12, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
         self.prompt_enabled_var = tk.BooleanVar(value=prompt.enabled)
         ttk.Checkbutton(p, text="Enable Prompt Helper", variable=self.prompt_enabled_var).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        ttk.Label(p, text="Preferred model").grid(row=2, column=0, sticky="w", pady=5)
-        self.prompt_var = tk.StringVar()
-        self.prompt_menu = ModelMenu(p, self.prompt_var)
+        ttk.Label(p, text="Preferred model").grid(row=2, column=0, sticky="nw", pady=5, padx=(0, 12))
+        self.prompt_menu = ChoiceList(p)
         self.prompt_menu.grid(row=2, column=1, sticky="ew", pady=5)
         self.prompt_menu.set_models(self.session.models, prompt.model, allow_none=True)
         self.auto_var = tk.BooleanVar(value=prompt.auto_lightest)
