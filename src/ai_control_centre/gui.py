@@ -91,7 +91,13 @@ class ControlCentreWindow(tk.Tk):
         self.after(150, self._poll_status)
         self.after(250, self._poll_system)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        if force_setup or not self.config_data.settings.setup_completed:
+        if (
+            force_setup
+            or not self.config_data.settings.setup_completed
+            or self.config_data.settings.setup_review_pending
+        ):
+            # A v1.2 setup opens on the wizard's welcome page: keep it as it is,
+            # or review it. Closing the wizard leaves everything working.
             self.after(500, self._open_setup_wizard)
 
     def _restore_window_size(self) -> None:
@@ -203,51 +209,8 @@ class ControlCentreWindow(tk.Tk):
             row=0, column=2, sticky="w", padx=(16, 0)
         )
 
-        row = 1
-        for service_id, config in self.config_data.services.items():
-            if service_id == self.prompt_config.service and service_id != "llama":
-                continue
-            state_var = tk.StringVar(value="Checking...")
-            detail_var = tk.StringVar(value="")
-            self.service_vars[service_id] = (state_var, detail_var)
-
-            ttk.Label(services, text=config.display_name).grid(
-                row=row, column=0, sticky="w", pady=4
-            )
-            state_label = ttk.Label(services, textvariable=state_var, width=18)
-            state_label.grid(row=row, column=1, sticky="w", padx=(16, 0), pady=4)
-            self.state_labels[service_id] = state_label
-            ttk.Label(services, textvariable=detail_var).grid(
-                row=row, column=2, sticky="ew", padx=(16, 10), pady=4
-            )
-            ttk.Button(
-                services,
-                text="Start",
-                width=8,
-                command=lambda sid=service_id: self._start_service(sid),
-            ).grid(row=row, column=3, padx=3)
-            ttk.Button(
-                services,
-                text="Stop",
-                width=8,
-                command=lambda sid=service_id: self._stop_service(sid),
-            ).grid(row=row, column=4, padx=3)
-            ttk.Button(
-                services,
-                text="Open",
-                width=8,
-                command=lambda sid=service_id: self._open_service(sid),
-            ).grid(row=row, column=5, padx=3)
-            ttk.Button(
-                services,
-                text="Logs",
-                style="Quiet.TButton",
-                width=8,
-                command=lambda sid=service_id: self._show_logs(sid),
-            ).grid(row=row, column=6, padx=3)
-            self.service_rows[service_id] = tuple(services.grid_slaves(row=row))
-            row += 1
-        self._update_visible_service_rows()
+        self.services_frame = services
+        self._build_service_rows()
 
         workspace = ttk.Panedwindow(outer, orient=tk.HORIZONTAL)
         workspace.grid(row=4, column=0, sticky="nsew")
@@ -257,6 +220,85 @@ class ControlCentreWindow(tk.Tk):
         workspace.add(prompt_panel, weight=3)
         self._build_system_panel(system_panel)
         self._build_prompt_panel(prompt_panel)
+
+    def _build_service_rows(self) -> None:
+        """One row per service. Rebuilt when the set of services changes."""
+        row = 1
+        for service_id, config in self.config_data.services.items():
+            if service_id == self.prompt_config.service and service_id != "llama":
+                continue
+            state_var = tk.StringVar(value="Checking...")
+            detail_var = tk.StringVar(value="")
+            self.service_vars[service_id] = (state_var, detail_var)
+
+            ttk.Label(self.services_frame, text=config.display_name).grid(
+                row=row, column=0, sticky="w", pady=4
+            )
+            state_label = ttk.Label(self.services_frame, textvariable=state_var, width=18)
+            state_label.grid(row=row, column=1, sticky="w", padx=(16, 0), pady=4)
+            self.state_labels[service_id] = state_label
+            ttk.Label(self.services_frame, textvariable=detail_var).grid(
+                row=row, column=2, sticky="ew", padx=(16, 10), pady=4
+            )
+            ttk.Button(
+                self.services_frame,
+                text="Start",
+                width=8,
+                command=lambda sid=service_id: self._start_service(sid),
+            ).grid(row=row, column=3, padx=3)
+            ttk.Button(
+                self.services_frame,
+                text="Stop",
+                width=8,
+                command=lambda sid=service_id: self._stop_service(sid),
+            ).grid(row=row, column=4, padx=3)
+            ttk.Button(
+                self.services_frame,
+                text="Open",
+                width=8,
+                command=lambda sid=service_id: self._open_service(sid),
+            ).grid(row=row, column=5, padx=3)
+            ttk.Button(
+                self.services_frame,
+                text="Logs",
+                style="Quiet.TButton",
+                width=8,
+                command=lambda sid=service_id: self._show_logs(sid),
+            ).grid(row=row, column=6, padx=3)
+            self.service_rows[service_id] = tuple(self.services_frame.grid_slaves(row=row))
+            row += 1
+        self._update_visible_service_rows()
+
+    def _shown_service_ids(self) -> list[str]:
+        return [
+            service_id
+            for service_id in self.config_data.services
+            if not (service_id == self.prompt_config.service and service_id != "llama")
+        ]
+
+    def _sync_service_rows(self) -> None:
+        """After a reload, add rows for new services and drop removed ones."""
+        if list(self.service_vars) == self._shown_service_ids():
+            return
+        for widgets in self.service_rows.values():
+            for widget in widgets:
+                widget.destroy()
+        self.service_rows.clear()
+        self.service_vars.clear()
+        self.state_labels.clear()
+        self._build_service_rows()
+
+    def _sync_task_buttons(self) -> None:
+        """Task buttons follow the current profiles, e.g. after Setup adds Image."""
+        for profile_id, button in self.task_buttons.items():
+            profile = self.config_data.profiles.get(profile_id)
+            if profile is None:
+                button.configure(text=profile_id.title(), command="")
+            else:
+                button.configure(
+                    text=profile.display_name,
+                    command=lambda pid=profile_id: self._start_profile(pid),
+                )
 
     def _update_visible_service_rows(self) -> None:
         """Show only the selected agent harness; preserve all service controllers."""
@@ -474,6 +516,8 @@ class ControlCentreWindow(tk.Tk):
         self.prompt_client = PromptClient(self.prompt_config)
         self.gpu_monitor = create_gpu_monitor(config.settings.gpu_backend)
         self._rebuild_model_menu()
+        self._sync_task_buttons()
+        self._sync_service_rows()
         self._update_capabilities()
         self._update_visible_service_rows()
         self.status_var.set("Configuration saved and reloaded")
