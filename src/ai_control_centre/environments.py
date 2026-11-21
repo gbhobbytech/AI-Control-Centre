@@ -20,11 +20,26 @@ class Availability(str, Enum):
     NOT_CONFIGURED = "not_configured"
     DISABLED = "disabled"
     MISSING_SERVICE = "missing_service"
+    MISSING_SOFTWARE = "missing_software"
     NO_MODEL_SELECTED = "no_model_selected"
     MODEL_NOT_FOUND = "model_not_found"
     MODEL_INCOMPLETE = "model_incomplete"
     NEEDS_TUNING = "needs_tuning"
     MISSING_HARNESS = "missing_harness"
+
+
+# Setup Wizard page that fixes each kind of problem.
+SETUP_PAGE = {
+    Availability.NOT_CONFIGURED: "environments",
+    Availability.DISABLED: "environments",
+    Availability.MISSING_SERVICE: "software",
+    Availability.MISSING_SOFTWARE: "software",
+    Availability.NO_MODEL_SELECTED: "models",
+    Availability.MODEL_NOT_FOUND: "models",
+    Availability.MODEL_INCOMPLETE: "models",
+    Availability.NEEDS_TUNING: "launch",
+    Availability.MISSING_HARNESS: "models",
+}
 
 
 @dataclass(frozen=True)
@@ -37,6 +52,10 @@ class EnvironmentStatus:
     @property
     def available(self) -> bool:
         return self.availability == Availability.READY
+
+    @property
+    def setup_page(self) -> str | None:
+        return SETUP_PAGE.get(self.availability)
 
 
 def profile_requires_model(config: AppConfig, profile: ProfileConfig) -> bool:
@@ -55,6 +74,25 @@ def profile_requires_model(config: AppConfig, profile: ProfileConfig) -> bool:
         ):
             return True
     return False
+
+
+def missing_software(config: AppConfig, profile: ProfileConfig) -> str | None:
+    """Describe the first program or folder a profile needs that no longer exists."""
+    for service_id in sorted(environment_services(profile, config.services, config.harnesses)):
+        service = config.services[service_id]
+        if not isinstance(service, ProcessServiceConfig):
+            continue
+        if not service.executable.is_file():
+            return f"{service.display_name} not found at {_home_relative(service.executable)}."
+        if not service.cwd.is_dir():
+            return f"{service.display_name} folder not found: {_home_relative(service.cwd)}."
+    return None
+
+
+def _home_relative(path) -> str:
+    from .discovery import portable_path
+
+    return portable_path(path)
 
 
 def evaluate_profile(config: AppConfig, profile_id: str) -> EnvironmentStatus:
@@ -78,6 +116,10 @@ def evaluate_profile(config: AppConfig, profile_id: str) -> EnvironmentStatus:
                 Availability.MISSING_SERVICE,
                 f"Required service '{service_id}' is not configured.",
             )
+
+    missing = missing_software(config, profile)
+    if missing is not None:
+        return status(Availability.MISSING_SOFTWARE, missing)
 
     if profile_requires_model(config, profile):
         model_id = profile.default_model

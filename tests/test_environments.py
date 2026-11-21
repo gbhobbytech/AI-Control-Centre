@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -41,11 +42,11 @@ def _config(
 ) -> AppConfig:
     services = {
         "llama": ProcessServiceConfig(
-            id="llama", display_name="llama.cpp", executable=Path("/bin/llama-server"),
+            id="llama", display_name="llama.cpp", executable=Path(sys.executable),
             args=("-m", "{model.path}"), cwd=Path("/"),
         ),
         "comfyui": ProcessServiceConfig(
-            id="comfyui", display_name="ComfyUI", executable=Path("/venv/bin/python"),
+            id="comfyui", display_name="ComfyUI", executable=Path(sys.executable),
             args=("main.py",), cwd=Path("/"),
         ),
         "dmz": DockerServiceConfig(
@@ -184,3 +185,33 @@ def test_inferred_environments_match_v12_capability_messages(scenario):
     for task_id in TASK_IDS:
         status = evaluate_profile(config, task_id)
         assert (status.available, status.reason) == _v12_task_capability(config, task_id), task_id
+
+
+def test_missing_software_is_reported_before_model_problems(tmp_path):
+    config = _config(models={})
+    gone = tmp_path / "llama.cpp/build/bin/llama-server"
+    services = dict(config.services)
+    services["llama"] = replace(services["llama"], executable=gone)
+    config = replace(config, services=services)
+    chat = evaluate_profile(config, "chat")
+    assert chat.availability == Availability.MISSING_SOFTWARE
+    assert chat.reason == f"llama.cpp not found at {gone}."
+    assert chat.setup_page == "software"
+    assert evaluate_profile(config, "image").available  # ComfyUI is unaffected
+
+
+def test_missing_working_folder_is_reported(tmp_path):
+    config = _config()
+    services = dict(config.services)
+    services["comfyui"] = replace(services["comfyui"], cwd=tmp_path / "ComfyUI")
+    image = evaluate_profile(replace(config, services=services), "image")
+    assert image.availability == Availability.MISSING_SOFTWARE
+    assert image.reason == f"ComfyUI folder not found: {tmp_path / 'ComfyUI'}."
+
+
+def test_every_problem_points_to_a_setup_page():
+    from ai_control_centre.environments import SETUP_PAGE
+
+    assert set(SETUP_PAGE) == set(Availability) - {Availability.READY}
+    assert SETUP_PAGE[Availability.NEEDS_TUNING] == "launch"
+    assert SETUP_PAGE[Availability.DISABLED] == "environments"
