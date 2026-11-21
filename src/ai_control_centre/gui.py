@@ -17,10 +17,10 @@ except ImportError as exc:  # pragma: no cover - depends on host packaging
 from .config import ConfigError, load_app_config
 from .environments import evaluate_profile
 from .domain import ProcessServiceConfig, ServiceState, TASK_IDS
-from .manager import ServiceManager
+from .manager import ConflictError, ModelChangeError, ServiceManager, SwitchRequired
 from .harnesses import visible_service_ids
 from .models import smallest_complete_model
-from .monitoring import GpuStatus, HostStatus, LinuxHostMonitor, create_gpu_monitor
+from .monitoring import GpuStatus, HostStatus, LinuxHostMonitor, create_gpu_monitor, describe_gpu_memory, settle_gpu_memory
 from .preferences import save_window_size
 from .prompt_client import PromptClient, prompt_service_action, select_prompt
 from .settings_ui import SettingsWindow, SetupWizard
@@ -701,6 +701,7 @@ class ControlCentreWindow(tk.Tk):
                 stop_conflicts=stop_conflicts,
                 replace_model=replace_model,
                 model_id=model,
+                after_stops=self._after_switch_stops,
             )
 
         def retry(reason: str) -> None:
@@ -744,6 +745,7 @@ class ControlCentreWindow(tk.Tk):
                 stop_conflicts=stop_conflicts,
                 replace_model=replace_model,
                 model_id=model,
+                after_stops=self._after_switch_stops,
             )
 
         def retry(reason: str) -> None:
@@ -887,6 +889,25 @@ class ControlCentreWindow(tk.Tk):
             return state, status.detail
         return state, status.detail
 
+    def _after_switch_stops(self, results) -> None:
+        """Runs on the worker thread after a switch stopped services, before starting.
+
+        Waits briefly for GPU memory use to settle and records it for the
+        status line. Information only: it never blocks the start.
+        """
+        stopped_gpu = any(
+            getattr(self.config_data.services.get(service_id), "gpu", False)
+            for service_id, status in results
+            if status.state == ServiceState.STOPPED
+        )
+        note = None
+        if stopped_gpu:
+            try:
+                note = describe_gpu_memory(settle_gpu_memory(self.gpu_monitor))
+            except Exception:  # noqa: BLE001 - monitoring is informational
+                note = None
+        self._switch_note = note
+
     def _retry_with_permission(
         self,
         exc: Exception,
@@ -894,25 +915,18 @@ class ControlCentreWindow(tk.Tk):
     ) -> tuple[bool, bool]:
         if retry_callback is None:
             return False, False
-        text = str(exc)
-        if "Retry with --stop-conflicts" in text:
-            approved = messagebox.askyesno(
-                "Resource conflict",
-                f"{text}\n\nStop the launcher-owned conflicting service(s) and continue?",
-                parent=self,
-            )
-            if approved:
-                retry_callback("conflict")
-            return True, approved
-        if "Retry with --replace-model" in text:
-            approved = messagebox.askyesno(
-                "Change loaded model",
-                f"{text}\n\nStop affected launcher-owned services, load the requested model and continue?",
-                parent=self,
-            )
-            if approved:
-                retry_callback("model")
-            return True, approved
+        if not isinstance(exc, SwitchRequired):
+            return False, False
+        plan = exc.plan
+        title = "Change loaded model" if isinstance(exc, ModelChangeError) else "Switch GPU workload"
+        if plan.blocked:
+            # Externally started services are never stopped automatically.
+            messagebox.showwarning(title, plan.describe(), parent=self)
+            return True, False
+        approved = messagebox.askyesno(title, plan.describe() + "\n\nContinue?", parent=self)
+        if approved:
+            retry_callback("conflict" if isinstance(exc, ConflictError) else "model")
+        return True, approved
         return False, False
 
     def _task_input(self) -> str:
@@ -1095,7 +1109,9 @@ class ControlCentreWindow(tk.Tk):
                             f"{self.config_data.services[service_id].display_name}: {status.state.value}"
                             for service_id, status in results
                         )
-                        self.status_var.set(summary)
+                        note = getattr(self, "_switch_note", None)
+                        self._switch_note = None
+                        self.status_var.set(f"{summary}. {note}" if note else summary)
                     else:
                         self.status_var.set(description.replace("...", " complete"))
                     if success_callback is not None:
@@ -1104,6 +1120,7 @@ class ControlCentreWindow(tk.Tk):
                 elif kind == "operation_error":
                     description, exc, retry_callback, error_callback = payload
                     self.operation_busy = False
+                    self._switch_note = None
                     handled, retrying = self._retry_with_permission(exc, retry_callback)
                     if not retrying and error_callback is not None:
                         error_callback(exc)
