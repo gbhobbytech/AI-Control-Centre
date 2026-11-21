@@ -131,3 +131,15 @@ def failure_advice(exc: Exception, config: AppConfig) -> FailureAdvice:
     return FailureAdvice(
         title=title, message=str(exc), hint=hint, log_path=log_path, setup_page=setup_page, service_id=service_id
     )
+
+
+def startup_error_text(config_dir: Path, exc: Exception) -> str:
+    """Explain why the app could not open, for a desktop launch with no terminal."""
+    return (
+        "AI Control Centre could not start because its configuration has a problem:\n\n"
+        f"{exc}\n\n"
+        f"Configuration folder: {config_dir}\n\n"
+        "Correct the file named above, then start AI Control Centre again. "
+        "If a file is missing, re-running the installer recreates the starter configuration "
+        "without changing files that already exist."
+    )

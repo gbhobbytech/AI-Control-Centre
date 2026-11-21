@@ -213,3 +213,16 @@ def test_failure_after_a_switch_still_names_the_service(tmp_path: Path):
     advice = failure_advice(info.value, config)
     assert advice.title == "ComfyUI could not start"
     assert "Already stopped for this switch: llama.cpp" in advice.message
+
+
+def test_startup_error_names_the_file_and_folder(tmp_path: Path):
+    from ai_control_centre.config import ConfigError, load_app_config
+    from ai_control_centre.feedback import startup_error_text
+
+    (tmp_path / "settings.toml").write_text("[paths\n", encoding="utf-8")
+    with pytest.raises(ConfigError) as info:
+        load_app_config(tmp_path)
+    text = startup_error_text(tmp_path, info.value)
+    assert "settings.toml is not valid TOML" in text
+    assert f"Configuration folder: {tmp_path}" in text
+    assert "re-running the installer recreates the starter configuration" in text

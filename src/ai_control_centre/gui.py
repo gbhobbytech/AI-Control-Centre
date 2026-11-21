@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import queue
+import subprocess
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -17,7 +18,15 @@ except ImportError as exc:  # pragma: no cover - depends on host packaging
 from .config import ConfigError, load_app_config
 from .environments import evaluate_profile
 from .ui_utils import HoverTip
-from .feedback import EXTERNAL_DETAIL, STATE_LABELS, attention_items, attention_text, failure_advice, task_tooltip
+from .feedback import (
+    EXTERNAL_DETAIL,
+    STATE_LABELS,
+    attention_items,
+    attention_text,
+    failure_advice,
+    startup_error_text,
+    task_tooltip,
+)
 from .domain import ProcessServiceConfig, ServiceState, TASK_IDS
 from .manager import ConflictError, ModelChangeError, ServiceManager, SwitchRequired
 from .harnesses import visible_service_ids
@@ -1331,12 +1340,40 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _show_startup_error(config_dir: Path, exc: Exception) -> None:
+    """A visible error when launched from the desktop, where stdout is not seen."""
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        return  # no display; the message was printed
+    root.title("AI Control Centre")
+    frame = ttk.Frame(root, padding=16)
+    frame.pack(fill="both", expand=True)
+    ttk.Label(frame, text=startup_error_text(config_dir, exc), wraplength=520, justify="left").pack(anchor="w")
+    buttons = ttk.Frame(frame)
+    buttons.pack(anchor="e", pady=(14, 0))
+
+    def open_folder() -> None:
+        target = config_dir if config_dir.is_dir() else config_dir.parent
+        try:
+            subprocess.Popen(["xdg-open", str(target)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            messagebox.showinfo("AI Control Centre", f"Open this folder in your file manager:\n{target}", parent=root)
+
+    ttk.Button(buttons, text="Open configuration folder", command=open_folder).pack(side="left")
+    ttk.Button(buttons, text="Close", command=root.destroy).pack(side="left", padx=(8, 0))
+    root.mainloop()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    config_dir = args.config_dir.expanduser()
     try:
-        app = ControlCentreWindow(args.config_dir.expanduser(), force_setup=args.setup)
+        load_app_config(config_dir)
+        app = ControlCentreWindow(config_dir, force_setup=args.setup)
     except (ConfigError, FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}")
+        _show_startup_error(config_dir, exc)
         return 1
     app.mainloop()
     return 0
