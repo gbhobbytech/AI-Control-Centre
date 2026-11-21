@@ -426,3 +426,17 @@ def test_configure_image_environment_rejects_unusable_installation(tmp_path: Pat
     with pytest.raises(ValueError, match="needs a ComfyUI installation"):
         configure_image_environment(config_dir, validate_llama_executable(tmp_path / "x"))
     assert {p.name: p.read_bytes() for p in config_dir.glob("*.toml")} == before
+
+
+def test_save_preferences_never_creates_empty_profiles(tmp_path: Path):
+    config_dir = _make_config(tmp_path)
+    raw = tomllib.loads((config_dir / "profiles.toml").read_text(encoding="utf-8"))
+    for profile_id in ("chat", "agent"):
+        raw["profiles"].pop(profile_id)
+    write_toml_atomic(config_dir / "profiles.toml", raw)
+
+    _save(config_dir, tmp_path)
+
+    profiles = load_app_config(config_dir).profiles
+    assert "chat" not in profiles and "agent" not in profiles
+    assert profiles["coding"].default_model == "large"

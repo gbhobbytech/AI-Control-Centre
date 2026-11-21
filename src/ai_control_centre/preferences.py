@@ -239,25 +239,30 @@ def save_preferences(
             raw_harness["open_service"] = harness.open_service
 
     profile_table = profiles.setdefault("profiles", {})
+    # Only profiles that already exist are updated. Creating an empty table
+    # here would leave a profile with no services, which does not load.
     for profile_id, model_id in task_models.items():
-        raw = profile_table.setdefault(profile_id, {})
+        raw = profile_table.get(profile_id)
+        if not isinstance(raw, dict):
+            continue
         if model_id:
             raw["default_model"] = model_id
         else:
             raw.pop("default_model", None)
-    agent = profile_table.setdefault("agent", {})
-    # V1 harnesses own the interface/runtime to open for Agent. Remove any
-    # profile-level V0.x value so future loads cannot resurrect the legacy
-    # relationship after migration.
-    agent.pop("open_service", None)
-    if agent_base_services:
-        agent["services"] = list(agent_base_services)
-    elif "services" in agent:
-        agent["services"] = []
-    if agent_harness:
-        agent["harness"] = agent_harness
-    else:
-        agent.pop("harness", None)
+    agent = profile_table.get("agent")
+    if isinstance(agent, dict):
+        # V1 harnesses own the interface/runtime to open for Agent. Remove any
+        # profile-level V0.x value so future loads cannot resurrect the legacy
+        # relationship after migration.
+        agent.pop("open_service", None)
+        if agent_base_services:
+            agent["services"] = list(agent_base_services)
+        elif "services" in agent:
+            agent["services"] = []
+        if agent_harness:
+            agent["harness"] = agent_harness
+        else:
+            agent.pop("harness", None)
 
     write_toml_atomic(settings_path, settings)
     write_toml_atomic(profiles_path, profiles)
