@@ -384,3 +384,67 @@ def test_upgrade_review_prefills_existing_v12_setup(tmp_path: Path):
     assert draft.task_models["coding"] == "qwen3_coder_30b_heretic"
     assert draft.agent_harness == "computer_dmz"
     assert session.comfyui_service_id() == "comfyui"
+
+
+# --- Phase 4: shared GPU conflict group offer -------------------------------------
+
+
+def _without_conflict_groups(config_dir: Path) -> None:
+    services = config_dir / "services.toml"
+    lines = services.read_text(encoding="utf-8").splitlines(keepends=True)
+    services.write_text("".join(line for line in lines if not line.startswith("conflict_groups")), encoding="utf-8")
+
+
+def test_no_gpu_group_offer_when_already_shared(tmp_path: Path):
+    config_dir = _v12_setup(tmp_path)  # llama and comfyui share large-gpu-workload, as on Orson Mini
+    session = _session(config_dir, tmp_path / "home")
+    assert session.gpu_conflict_gaps() == ()
+    assert "GPU sharing" not in dict(session.review().sections)
+
+
+def test_wizard_offers_and_adds_missing_gpu_group(tmp_path: Path):
+    config_dir = _v12_setup(tmp_path)
+    _without_conflict_groups(config_dir)
+    before = (config_dir / "services.toml").read_text(encoding="utf-8")
+    session = _session(config_dir, tmp_path / "home")
+    assert session.gpu_conflict_gaps() == ("llama", "comfyui")
+    review = dict(session.review().sections)
+    assert "will be added so only one runs at once" in review["GPU sharing"][0]
+
+    session.draft.environments = {"coding": False, "chat": False, "agent": False, "image": True}
+    session.draft.comfyui = session.choose_comfyui_path(
+        _install_comfyui(tmp_path / "home"), None
+    )
+    session.apply()
+
+    config = load_app_config(config_dir)
+    assert "large-gpu-workload" in config.services["llama"].conflict_groups
+    assert "large-gpu-workload" in config.services["comfyui"].conflict_groups
+    after = (config_dir / "services.toml").read_text(encoding="utf-8")
+    assert after.startswith(before.split("[services.llama]")[0])  # leading comments kept
+
+
+def test_declining_the_gpu_group_offer_leaves_services_alone(tmp_path: Path):
+    config_dir = _v12_setup(tmp_path)
+    _without_conflict_groups(config_dir)
+    session = _session(config_dir, tmp_path / "home")
+    session.draft.add_gpu_conflict_group = False
+    assert "can run out of GPU memory" in dict(session.review().sections)["GPU sharing"][0]
+    session.draft.environments = {"coding": False, "chat": False, "agent": False, "image": True}
+    session.choose_comfyui_path(_install_comfyui(tmp_path / "home"))
+    session.apply()
+    config = load_app_config(config_dir)
+    assert config.services["llama"].conflict_groups == ()
+    assert config.services["comfyui"].conflict_groups == ()
+
+
+def test_new_comfyui_next_to_older_llama_entry_gets_shared_group(tmp_path: Path):
+    config_dir, home, _ = _fresh_install(tmp_path)
+    _without_conflict_groups(config_dir)  # an older hand-written llama entry
+    _install_comfyui(home)
+    session = _session(config_dir, home)
+    _only(session, "image")
+    assert session.gpu_conflict_gaps() == ("llama",)
+    session.apply()
+    config = load_app_config(config_dir)
+    assert set(config.services["llama"].conflict_groups) & set(config.services["comfyui"].conflict_groups)

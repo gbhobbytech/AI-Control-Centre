@@ -440,3 +440,40 @@ def test_save_preferences_never_creates_empty_profiles(tmp_path: Path):
     profiles = load_app_config(config_dir).profiles
     assert "chat" not in profiles and "agent" not in profiles
     assert profiles["coding"].default_model == "large"
+
+
+def test_add_service_conflict_group_keeps_existing_groups_and_comments(tmp_path: Path):
+    from ai_control_centre.preferences import add_service_conflict_group
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    services = config_dir / "services.toml"
+    services.write_text(
+        "# mine\n[services.web]\ndisplay_name = \"Web\"\ntype = \"process\"\nexecutable = \"/bin/true\"\ncwd = \"/tmp\"\n"
+        "conflict_groups = [\"ports\"]  # keep me\n",
+        encoding="utf-8",
+    )
+    assert add_service_conflict_group(config_dir, "web", "large-gpu-workload") is True
+    text = services.read_text(encoding="utf-8")
+    assert text.startswith("# mine\n")
+    assert load_services(services)["web"].conflict_groups == ("ports", "large-gpu-workload")
+    before = services.read_bytes()
+    assert add_service_conflict_group(config_dir, "web", "large-gpu-workload") is False
+    assert services.read_bytes() == before
+
+
+def test_add_service_conflict_group_refuses_multiline_arrays(tmp_path: Path):
+    from ai_control_centre.preferences import add_service_conflict_group
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    services = config_dir / "services.toml"
+    services.write_text(
+        "[services.web]\ndisplay_name = \"Web\"\ntype = \"process\"\nexecutable = \"/bin/true\"\ncwd = \"/tmp\"\n"
+        "conflict_groups = [\n  \"ports\",\n]\n",
+        encoding="utf-8",
+    )
+    before = services.read_bytes()
+    with pytest.raises(ValueError, match="spans several lines; edit it by hand"):
+        add_service_conflict_group(config_dir, "web", "large-gpu-workload")
+    assert services.read_bytes() == before

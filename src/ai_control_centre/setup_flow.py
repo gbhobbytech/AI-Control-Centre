@@ -37,6 +37,7 @@ from .domain import HarnessConfig, ModelConfig, ProcessServiceConfig, SetupState
 from .harnesses import discover_agent_harnesses
 from .health import url_endpoint
 from .preferences import (
+    add_service_conflict_group,
     append_toml_table,
     configure_image_environment,
     detect_setup_environment,
@@ -44,7 +45,7 @@ from .preferences import (
     save_preferences,
     update_service_paths,
 )
-from .presets import apply_preset, load_preset
+from .presets import PresetError, apply_preset, load_preset
 from .tuning import is_llama_service
 
 LLM_ENVIRONMENTS: tuple[str, ...] = ("coding", "chat", "agent")
@@ -63,6 +64,8 @@ STEP_LAUNCH = "launch"
 STEP_PROMPT = "prompt"
 
 DEFAULT_COMFYUI_PORT = 8188
+# Shared by the llama.cpp and ComfyUI presets and existing v1.2 configurations.
+GPU_CONFLICT_GROUP = "large-gpu-workload"
 _GUARDED_FILES = ("settings.toml", "services.toml", "profiles.toml")
 # Applied in this order so settings.toml, which marks setup complete, is last.
 _COMMIT_ORDER = ("services.toml", "profiles.toml", "settings.toml")
@@ -107,6 +110,9 @@ class SetupDraft:
     harnesses: dict[str, HarnessConfig]
     agent_base_services: tuple[str, ...]
     prompt: PromptChoices
+    # Offer accepted by default: give llama.cpp and ComfyUI a shared GPU
+    # conflict group when an existing configuration lacks one.
+    add_gpu_conflict_group: bool = True
 
     @property
     def needs_llama(self) -> bool:
@@ -338,6 +344,33 @@ class SetupSession:
                 changes.append(PathChange(comfy_sid, "cwd", service.cwd, self.draft.comfyui.cwd))
         return changes
 
+    def gpu_conflict_gaps(self) -> tuple[str, ...]:
+        """Services to add the GPU conflict group to, so llama.cpp and ComfyUI never run together.
+
+        Empty when both already share a group, either does not use the GPU, or
+        one of them is not configured (a new ComfyUI service from the preset
+        already has the group).
+        """
+        llama_sid = self.llama_service_id()
+        if llama_sid is None:
+            return ()
+        llama = self.config.services[llama_sid]
+        comfy_sid = self.comfyui_service_id()
+        if comfy_sid is not None:
+            comfy = self.config.services[comfy_sid]
+            comfy_groups, comfy_gpu = set(comfy.conflict_groups), comfy.gpu
+        elif self.draft.needs_comfyui:
+            comfy_groups, comfy_gpu = {GPU_CONFLICT_GROUP}, True
+        else:
+            return ()
+        if not (llama.gpu and comfy_gpu) or set(llama.conflict_groups) & comfy_groups:
+            return ()
+        return tuple(
+            sid
+            for sid, groups in ((llama_sid, set(llama.conflict_groups)), (comfy_sid, comfy_groups))
+            if sid is not None and GPU_CONFLICT_GROUP not in groups
+        )
+
     # --- Checks ----------------------------------------------------------------
 
     def issues(self, step: str | None = None) -> list[Issue]:
@@ -540,6 +573,20 @@ class SetupSession:
             else:
                 sections.append(("Prompt Helper", ("Off",)))
 
+        gaps = self.gpu_conflict_gaps()
+        if gaps:
+            if draft.add_gpu_conflict_group:
+                line = (
+                    "llama.cpp and ComfyUI both use the GPU but could run at the same time. "
+                    f"The shared '{GPU_CONFLICT_GROUP}' group will be added so only one runs at once."
+                )
+            else:
+                line = (
+                    "llama.cpp and ComfyUI both use the GPU and will be left able to run at the same time, "
+                    "which can run out of GPU memory."
+                )
+            sections.append(("GPU sharing", (line,)))
+
         issues = tuple(self.issues())
         if issues:
             sections.append(("Unresolved issues", tuple(issue.message for issue in issues)))
@@ -585,7 +632,10 @@ class SetupSession:
         try:
             for path in self.config_dir.glob("*.toml"):
                 shutil.copy2(path, staging / path.name)
-            self._apply_to(staging, final)
+            try:
+                self._apply_to(staging, final)
+            except (ValueError, PresetError) as exc:
+                raise SetupError(f"The new configuration could not be prepared, so nothing was saved: {exc}") from exc
             try:
                 load_app_config(staging)
             except ConfigError as exc:
@@ -650,6 +700,10 @@ class SetupSession:
                     staging / "profiles.toml", ("profiles", task), table,
                     comment=f"Added by AI Control Centre for the {ENVIRONMENT_NAMES[task]} environment.",
                 )
+
+        if draft.add_gpu_conflict_group:
+            for service_id in self.gpu_conflict_gaps():
+                add_service_conflict_group(staging, service_id, GPU_CONFLICT_GROUP)
 
         existing = {
             task: config.profiles[task].default_model if task in config.profiles else None

@@ -355,22 +355,13 @@ def _header_parts(inner: str) -> tuple[str, ...]:
     return tuple(part.strip().strip('"').strip("'") for part in inner.split("."))
 
 
-def update_service_paths(
-    config_dir: Path,
-    service_id: str,
-    *,
-    executable: Path | str | None = None,
-    cwd: Path | str | None = None,
-) -> None:
-    """Change where one process service is installed, after the user confirms it.
+def _update_service_lines(config_dir: Path, service_id: str, values: Mapping[str, str]) -> None:
+    """Set single-line keys of one [services.<id>] table, keeping all other text.
 
-    Only the executable and cwd lines of [services.<id>] are rewritten; the
-    rest of services.toml, including comments, stays exactly as it was. The
-    result is validated before it replaces the file.
+    values maps key -> TOML value text. Existing lines are replaced in place;
+    missing keys are inserted after the table header. The result is
+    validated before it replaces services.toml.
     """
-    updates = {key: str(value) for key, value in (("executable", executable), ("cwd", cwd)) if value is not None}
-    if not updates:
-        return
     path = config_dir / "services.toml"
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
 
@@ -388,15 +379,17 @@ def update_service_paths(
     )
 
     insert_at = header_index + 1
-    for key, value in updates.items():
-        pattern = re.compile(rf"^(?P<indent>\s*)(?P<q>[\"']?){key}(?P=q)\s*=(?P<rest>.*)$")
-        new_line = f"{key} = {_quote(value)}\n"
+    for key, value_text in values.items():
+        pattern = re.compile(rf"^(?P<indent>\s*)(?P<q>[\"']?){re.escape(key)}(?P=q)\s*=(?P<rest>.*)$")
+        new_line = f"{key} = {value_text}\n"
         for index in range(header_index + 1, end):
             match = pattern.match(lines[index].rstrip("\n"))
             if match:
                 rest = match.group("rest").strip()
-                if rest.startswith(('"""', "'''")):
-                    raise ValueError(f"[services.{service_id}] {key} uses a multi-line string; edit it by hand")
+                multiline_string = rest.startswith(('"""', "'''"))
+                open_array = rest.startswith("[") and rest.count("[") > rest.count("]")
+                if multiline_string or open_array:
+                    raise ValueError(f"[services.{service_id}] {key} spans several lines; edit it by hand")
                 lines[index] = match.group("indent") + new_line
                 break
         else:
@@ -413,6 +406,40 @@ def update_service_paths(
         _write_text_atomic(path, "".join(lines), validate)
     except (ConfigError, tomllib.TOMLDecodeError) as exc:
         raise ValueError(f"Updating [services.{service_id}] would make services.toml invalid: {exc}") from exc
+
+
+def update_service_paths(
+    config_dir: Path,
+    service_id: str,
+    *,
+    executable: Path | str | None = None,
+    cwd: Path | str | None = None,
+) -> None:
+    """Change where one process service is installed, after the user confirms it.
+
+    Only the executable and cwd lines of [services.<id>] are rewritten; the
+    rest of services.toml, including comments, stays exactly as it was.
+    """
+    values = {key: _quote(str(value)) for key, value in (("executable", executable), ("cwd", cwd)) if value is not None}
+    if values:
+        _update_service_lines(config_dir, service_id, values)
+
+
+def add_service_conflict_group(config_dir: Path, service_id: str, group: str) -> bool:
+    """Add a conflict group to one service, keeping its existing groups and comments.
+
+    Returns False when the service already has the group.
+    """
+    data = _load_toml(config_dir / "services.toml")
+    table = data.get("services", {}).get(service_id)
+    if not isinstance(table, dict):
+        raise ValueError(f"services.toml has no [services.{service_id}] table to update")
+    groups = [str(item) for item in table.get("conflict_groups", [])]
+    if group in groups:
+        return False
+    groups.append(group)
+    _update_service_lines(config_dir, service_id, {"conflict_groups": _scalar(groups)})
+    return True
 
 
 # --- Image environment ---------------------------------------------------------

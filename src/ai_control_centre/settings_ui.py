@@ -1489,6 +1489,18 @@ class SetupWizard(tk.Toplevel):
         text.grid(row=1, column=0, sticky="nsew")
         text.insert("1.0", review.as_text())
         text.configure(state="disabled")
+        if self.session.gpu_conflict_gaps():
+            self.gpu_group_var = tk.BooleanVar(value=self.session.draft.add_gpu_conflict_group)
+            ttk.Checkbutton(
+                p,
+                text="Never run llama.cpp and ComfyUI at the same time (recommended): add the shared GPU conflict group",
+                variable=self.gpu_group_var,
+                command=self._toggle_gpu_group,
+            ).grid(row=2, column=0, sticky="w", pady=(8, 0))
+
+    def _toggle_gpu_group(self) -> None:
+        self.session.draft.add_gpu_conflict_group = bool(self.gpu_group_var.get())
+        self._show("review")
 
     def _finish(self) -> None:
         review = self.session.review()
