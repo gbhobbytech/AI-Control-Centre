@@ -102,6 +102,8 @@ class Settings:
     # the configured profiles by load_app_config().
     environments: Mapping[str, bool] = field(default_factory=dict)
     environments_explicit: bool = False
+    # Fingerprint of the "needs attention" problems the user dismissed.
+    dismissed_attention: str | None = None
 
     @property
     def setup_review_pending(self) -> bool:
@@ -273,7 +275,15 @@ def load_settings(path: Path) -> Settings:
         setup_state=setup_state,
         environments=environments,
         environments_explicit=environments_explicit,
+        dismissed_attention=_load_dismissed_attention(data.get("ui")),
     )
+
+
+def _load_dismissed_attention(raw: Any) -> str | None:
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("dismissed_attention")
+    return value if isinstance(value, str) and value else None
 
 
 def _load_environments(raw: Any) -> tuple[dict[str, bool], bool]:

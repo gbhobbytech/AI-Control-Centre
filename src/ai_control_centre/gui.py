@@ -5,6 +5,7 @@ import queue
 import subprocess
 import threading
 from collections.abc import Callable
+from dataclasses import replace as dc_replace
 from pathlib import Path
 
 try:
@@ -22,7 +23,9 @@ from .feedback import (
     EXTERNAL_DETAIL,
     STATE_LABELS,
     attention_items,
+    attention_key,
     attention_text,
+    attention_visible,
     failure_advice,
     startup_error_text,
     task_tooltip,
@@ -32,7 +35,7 @@ from .manager import ConflictError, ModelChangeError, ServiceManager, SwitchRequ
 from .harnesses import visible_service_ids
 from .models import smallest_complete_model
 from .monitoring import GpuStatus, HostStatus, LinuxHostMonitor, create_gpu_monitor, describe_gpu_memory, settle_gpu_memory
-from .preferences import save_window_size
+from .preferences import save_dismissed_attention, save_window_size
 from .prompt_client import PromptClient, prompt_service_action, select_prompt
 from .settings_ui import SettingsWindow, SetupWizard
 from .theme import apply_theme, style_classic
@@ -182,6 +185,12 @@ class ControlCentreWindow(tk.Tk):
         ttk.Button(
             self.attention_row, text="Fix in Setup…", style="Quiet.TButton", command=self._fix_in_setup
         ).grid(row=0, column=1, sticky="e", padx=(8, 0))
+        dismiss = ttk.Button(
+            self.attention_row, text="Dismiss", style="Quiet.TButton", command=self._dismiss_attention
+        )
+        dismiss.grid(row=0, column=2, sticky="e", padx=(4, 0))
+        HoverTip(dismiss, "Hide this message. It comes back if the problems change.")
+        self._attention_key = None
         self.attention_row.grid_remove()
         self._attention_page = None
 
@@ -585,6 +594,20 @@ class ControlCentreWindow(tk.Tk):
     def _open_setup_wizard(self, start_page: str | None = None) -> None:
         SetupWizard(self, self.config_dir, self.config_data, self._reload_configuration, start_page=start_page)
 
+    def _dismiss_attention(self) -> None:
+        key = self._attention_key
+        self.attention_row.grid_remove()
+        if key is None:
+            return
+        try:
+            save_dismissed_attention(self.config_dir, key)
+        except Exception as exc:  # noqa: BLE001 - preference write is best-effort
+            self.status_var.set(f"Could not remember the dismissal: {exc}")
+        self.config_data = dc_replace(
+            self.config_data,
+            settings=dc_replace(self.config_data.settings, dismissed_attention=key),
+        )
+
     def _fix_in_setup(self) -> None:
         self._open_setup_wizard(self._attention_page)
 
@@ -635,7 +658,8 @@ class ControlCentreWindow(tk.Tk):
             if tip is not None:
                 tip.text = task_tooltip(status)
         items = attention_items(self.config_data)
-        if items:
+        self._attention_key = attention_key(items) if items else None
+        if attention_visible(items, self.config_data.settings.dismissed_attention):
             self.attention_var.set(attention_text(items))
             self._attention_page = items[0].setup_page
             self.attention_row.grid()

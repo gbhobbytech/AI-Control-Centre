@@ -7,6 +7,7 @@ dialogs with a practical next step.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -59,6 +60,16 @@ def attention_items(config: AppConfig) -> list[Attention]:
             continue
         items.append(Attention(task_id, f"{TASK_NAMES[task_id]}: {status.reason}", status.setup_page))
     return items
+
+
+def attention_key(items: list[Attention]) -> str:
+    """Fingerprint of the current problems. A dismissal only hides this exact set."""
+    joined = "\n".join(f"{item.task_id}|{item.message}" for item in sorted(items, key=lambda i: i.task_id))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
+
+
+def attention_visible(items: list[Attention], dismissed: str | None) -> bool:
+    return bool(items) and attention_key(items) != dismissed
 
 
 def attention_text(items: list[Attention]) -> str:

@@ -226,3 +226,31 @@ def test_startup_error_names_the_file_and_folder(tmp_path: Path):
     assert "settings.toml is not valid TOML" in text
     assert f"Configuration folder: {tmp_path}" in text
     assert "re-running the installer recreates the starter configuration" in text
+
+
+def test_dismissed_attention_stays_hidden_until_problems_change(tmp_path: Path):
+    from ai_control_centre.feedback import attention_key, attention_visible
+
+    config = _config(tmp_path, models={})
+    items = attention_items(config)
+    key = attention_key(items)
+    assert attention_visible(items, None) is True
+    assert attention_visible(items, key) is False  # dismissed
+    worse = attention_items(_config(tmp_path, models={}, comfy_exe=tmp_path / "missing/python"))
+    assert attention_visible(worse, key) is True  # a new problem shows again
+    assert attention_visible([], key) is False
+
+
+def test_dismissal_is_remembered_in_settings(tmp_path: Path):
+    from ai_control_centre.config import load_settings
+    from ai_control_centre.preferences import save_dismissed_attention, write_toml_atomic
+
+    settings = tmp_path / "settings.toml"
+    write_toml_atomic(settings, {"paths": {"log_dir": str(tmp_path / "l"), "runtime_dir": str(tmp_path / "r")},
+                                 "appearance": {"mode": "dark"}})
+    save_dismissed_attention(tmp_path, "abc123")
+    assert load_settings(settings).dismissed_attention == "abc123"
+    assert load_settings(settings).appearance["mode"] == "dark"  # other settings kept
+    save_dismissed_attention(tmp_path, None)
+    assert load_settings(settings).dismissed_attention is None
+    assert "ui" not in settings.read_text(encoding="utf-8")

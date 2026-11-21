@@ -335,6 +335,23 @@ def save_appearance(config_dir: Path, values: Mapping) -> None:
     write_toml_atomic(path, data)
 
 
+def save_dismissed_attention(config_dir: Path, key: str | None) -> None:
+    """Remember which "needs attention" message the user dismissed (None clears it)."""
+    path = config_dir / "settings.toml"
+    data = _load_toml(path)
+    ui = data.get("ui")
+    ui = dict(ui) if isinstance(ui, dict) else {}
+    if key:
+        ui["dismissed_attention"] = key
+    else:
+        ui.pop("dismissed_attention", None)
+    if ui:
+        data["ui"] = ui
+    else:
+        data.pop("ui", None)
+    write_toml_atomic(path, data)
+
+
 def save_window_size(config_dir: Path, width: int, height: int) -> None:
     """Persist the main-window size without changing other user settings."""
     path = config_dir / "settings.toml"
