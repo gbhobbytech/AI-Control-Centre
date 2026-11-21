@@ -78,6 +78,15 @@ class ModelChangeError(SwitchRequired):
     pass
 
 
+class ServiceStartError(RuntimeError):
+    """A service failed to start or become usable. Names the service and its log."""
+
+    def __init__(self, message: str, service_id: str, log_path=None):
+        super().__init__(message)
+        self.service_id = service_id
+        self.log_path = log_path
+
+
 class TransitionError(RuntimeError):
     """A switch stopped services and then could not complete."""
 
@@ -565,13 +574,25 @@ class ServiceManager:
                     results.append((item, status))
                     continue
                 controller = self._controller_for_start(item, model_id)
-                result = controller.start()
+                result = self._start_controller(item, controller)
                 results.append((item, result))
                 if result.state != ServiceState.READY and not (
                     result.state == ServiceState.RUNNING_NOT_READY and controller.config.health is None
                 ):
-                    raise RuntimeError(f"{item} failed to become usable: {result.detail}")
+                    raise ServiceStartError(
+                        f"{item} failed to become usable: {result.detail}", item, getattr(controller, "log_path", None)
+                    )
         return results
+
+    @staticmethod
+    def _start_controller(service_id: str, controller) -> ServiceStatus:
+        """Start one service; failures name the service (same message text as before)."""
+        try:
+            return controller.start()
+        except (ServiceStartError, SwitchRequired, TransitionError):
+            raise
+        except (OSError, RuntimeError) as exc:
+            raise ServiceStartError(str(exc), service_id, getattr(controller, "log_path", None)) from exc
 
     @staticmethod
     def _after_stops(results, callback) -> None:
@@ -656,13 +677,15 @@ class ServiceManager:
                     results.append((service_id, current))
                     continue
                 controller = self._controller_for_start(service_id, selected_model)
-                result = controller.start()
+                result = self._start_controller(service_id, controller)
                 results.append((service_id, result))
                 if result.state != ServiceState.READY and not (
                     result.state == ServiceState.RUNNING_NOT_READY and controller.config.health is None
                 ):
-                    raise RuntimeError(
-                        f"Profile '{profile.display_name}' stopped because {service_id} failed: {result.detail}"
+                    raise ServiceStartError(
+                        f"Profile '{profile.display_name}' stopped because {service_id} failed: {result.detail}",
+                        service_id,
+                        getattr(controller, "log_path", None),
                     )
 
         open_service = self._profile_open_service(profile)

@@ -16,6 +16,7 @@ except ImportError as exc:  # pragma: no cover - depends on host packaging
 
 from .config import ConfigError, load_app_config
 from .environments import evaluate_profile
+from .feedback import STATE_LABELS
 from .domain import ProcessServiceConfig, ServiceState, TASK_IDS
 from .manager import ConflictError, ModelChangeError, ServiceManager, SwitchRequired
 from .harnesses import visible_service_ids
@@ -27,15 +28,7 @@ from .settings_ui import SettingsWindow, SetupWizard
 from .theme import apply_theme, style_classic
 from .tuning import is_llama_service
 
-_STATE_LABELS = {
-    ServiceState.STOPPED: "Stopped",
-    ServiceState.STARTING: "Starting",
-    ServiceState.READY: "Ready",
-    ServiceState.RUNNING_NOT_READY: "Starting",
-    ServiceState.EXTERNAL: "External",
-    ServiceState.ERROR: "Error",
-    ServiceState.UNKNOWN: "Unknown",
-}
+_STATE_LABELS = STATE_LABELS
 
 _TASK_IDS = TASK_IDS
 _TASK_DEFAULT = "Task default"
