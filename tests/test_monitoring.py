@@ -53,3 +53,47 @@ def test_parse_proc_stat_does_not_double_count_guest_time():
 def test_cpu_percent_rejects_non_forward_sample():
     sample = CpuCounters(idle=10, total=20)
     assert calculate_cpu_percent(sample, sample) is None
+
+
+def test_settle_gpu_memory_waits_for_reading_to_stabilise():
+    from ai_control_centre.monitoring import GpuStatus, describe_gpu_memory, settle_gpu_memory
+
+    readings = iter([6100, 2400, 410, 400, 390])
+
+    class Monitor:
+        def status(self):
+            return GpuStatus(True, "nvidia-smi", "RTX", 8188, next(readings))
+
+    now = [0.0]
+    status = settle_gpu_memory(
+        Monitor(), sleep=lambda s: now.__setitem__(0, now[0] + s), clock=lambda: now[0]
+    )
+    assert status.memory_used_mib == 400
+    assert now[0] == 3.0
+    assert describe_gpu_memory(status) == "GPU memory after stopping: about 0.4 of 8.0 GB in use."
+
+
+def test_settle_gpu_memory_gives_up_after_timeout_and_handles_no_gpu():
+    from ai_control_centre.monitoring import GpuStatus, describe_gpu_memory, settle_gpu_memory
+
+    value = [8000]
+
+    class Falling:
+        def status(self):
+            value[0] -= 500
+            return GpuStatus(True, "nvidia-smi", "RTX", 8188, value[0])
+
+    now = [0.0]
+    status = settle_gpu_memory(
+        Falling(), timeout=3, sleep=lambda s: now.__setitem__(0, now[0] + s), clock=lambda: now[0]
+    )
+    assert now[0] == 3.0 and status.memory_used_mib == 6000
+
+    class Missing:
+        def status(self):
+            return GpuStatus(False, "nvidia-smi", detail="nvidia-smi not found")
+
+    assert settle_gpu_memory(Missing()).available is False
+    assert settle_gpu_memory(None) is None
+    assert describe_gpu_memory(None) is None
+    assert describe_gpu_memory(GpuStatus(False, "nvidia-smi")) is None

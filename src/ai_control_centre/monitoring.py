@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -213,3 +214,46 @@ def create_gpu_monitor(backend: str):
     if value in {"none", "off", "unavailable"}:
         return None
     raise ValueError(f"Unsupported GPU monitoring backend: {backend}")
+
+
+def settle_gpu_memory(
+    monitor,
+    *,
+    timeout: float = 10.0,
+    interval: float = 1.0,
+    tolerance_mib: int = 64,
+    sleep=time.sleep,
+    clock=time.monotonic,
+) -> GpuStatus | None:
+    """After GPU workloads are stopped, wait briefly for reported VRAM use to settle.
+
+    Returns the last reading, or None without a monitor. This is information
+    only: driver-reported usage is not a guarantee of free memory, so callers
+    must never use it to allow or refuse a start.
+    """
+    if monitor is None:
+        return None
+    deadline = clock() + timeout
+    previous = monitor.status()
+    if not previous.available or previous.memory_used_mib is None:
+        return previous
+    while clock() < deadline:
+        sleep(interval)
+        current = monitor.status()
+        if not current.available or current.memory_used_mib is None:
+            return current
+        if abs(current.memory_used_mib - previous.memory_used_mib) <= tolerance_mib:
+            return current
+        previous = current
+    return previous
+
+
+def describe_gpu_memory(status: GpuStatus | None) -> str | None:
+    """A short, plainly approximate line for the status bar."""
+    if status is None or not status.available:
+        return None
+    if status.memory_used_mib is None or status.memory_total_mib is None:
+        return None
+    used = status.memory_used_mib / 1024
+    total = status.memory_total_mib / 1024
+    return f"GPU memory after stopping: about {used:.1f} of {total:.1f} GB in use."
